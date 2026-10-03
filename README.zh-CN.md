@@ -15,7 +15,7 @@ GoldSrc 的 Win32 线程代码在创建它的模块被卸载时可能仍在运�
 | `ServerBrowser.dll` | 同 `GameUI.dll` |
 | `server.dll` | 仅限 Sven Co-op（`svencoop` 游戏目录） |
 
-该插件还修复了 Valve 的一个 bug：`_restart` 命令没有正确关闭服务器，导致 `CSteam3Server` 之类的资源泄漏。被 hook 后的 `_restart` 会先执行 `shutdownserver`。
+该插件还修复了 Valve 的一个 bug：`_restart` 命令没有正确关闭服务器，导致 `CSteam3Server` 对象出现资源泄漏。被 hook 后的 `_restart` 会先执行 `shutdownserver`以正确释放这些资源。
 
 ## 安装
 
