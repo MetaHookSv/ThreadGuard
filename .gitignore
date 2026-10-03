@@ -1,0 +1,7 @@
+/.vs
+/Debug
+/Release
+/build/
+/install/
+/thirdparty/cache/
+*.user

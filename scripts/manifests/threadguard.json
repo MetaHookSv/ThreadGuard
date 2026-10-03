@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "threadguard",
+  "indexUrl": "https://hlnd2t.github.io/GoldSrc_VibeSignatures/gamesymbols/index.json",
+  "gameVersions": [
+    "cof-5936",
+    "hl-10210",
+    "hl-3248",
+    "hl-3266",
+    "hl-3329",
+    "hl-3647",
+    "hl-4554",
+    "hl-6153",
+    "hl-8684",
+    "svencoop-10257",
+    "svencoop-8948"
+  ],
+  "symbols": {
+    "engine": {
+      "eng": "global"
+    }
+  }
+}
