@@ -23,7 +23,6 @@ function(threadguard_prepare_dependencies)
             GIT_REPOSITORY https://github.com/MetaHookSv/MetaHook
             GIT_TAG 4d23b6fecd79dc949aabc2e145480cd1328d4a35
             GIT_SUBMODULES ""
-            GIT_SUBMODULES_RECURSIVE FALSE
             # This SDK directory has no CMakeLists.txt: populate without building the launcher.
             SOURCE_SUBDIR include
         )
