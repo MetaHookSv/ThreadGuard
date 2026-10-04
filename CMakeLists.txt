@@ -68,13 +68,13 @@ install(FILES "$<TARGET_PDB_FILE:ThreadGuard>" DESTINATION svencoop/metahook/plu
 # synchronizer downloads the upstream catalog into a persistent cache, prunes
 # it, and publishes the result.
 option(THREADGUARD_SYNC_GAMEDATA "Download and prune ThreadGuard's gamedata catalog before building" ON)
-set(THREADGUARD_GAMEDATA_DIR "${CMAKE_BINARY_DIR}/assets/svencoop/metahook/gamedata/threadguard" CACHE PATH "ThreadGuard gamedata catalog directory")
+set(THREADGUARD_GAMEDATA_DIR "${PROJECT_BINARY_DIR}/assets/svencoop/metahook/gamedata/threadguard" CACHE PATH "ThreadGuard gamedata catalog directory")
 if(THREADGUARD_SYNC_GAMEDATA)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_custom_target(ThreadGuardGameData
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sync-gamedata.py"
             --manifest "${CMAKE_CURRENT_SOURCE_DIR}/scripts/manifests/threadguard.json"
-            --target-dir "${THREADGUARD_GAMEDATA_DIR}" --temp-root "${CMAKE_BINARY_DIR}/gamedata-sync"
+            --target-dir "${THREADGUARD_GAMEDATA_DIR}" --temp-root "${PROJECT_BINARY_DIR}/gamedata-sync"
         COMMENT "Synchronizing and validating ThreadGuard gamedata"
         VERBATIM)
     add_custom_target(ThreadGuardGameDataValidate
