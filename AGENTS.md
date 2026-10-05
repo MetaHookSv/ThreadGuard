@@ -35,7 +35,6 @@ ThreadGuard/
 │   ├── manifests/threadguard.json      # Gamedata manifest (one engine global)
 │   ├── sync-gamedata.py                # Prunes the upstream catalog into the build tree
 │   └── validate-gamedata.py            # Validates it before the plugin target builds
-├── memory/project_overview.md # Longer design note (permalink prefix `threadguard/`)
 ├── thirdparty/cache/          # Ignored VC-LTL binary cache
 ├── build/x86/<configuration>/    # Ignored build output
 ├── install/x86/<configuration>/  # Ignored install output
