@@ -62,9 +62,9 @@ set_target_properties(ThreadGuard PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEAS
 install(TARGETS ThreadGuard RUNTIME DESTINATION svencoop/metahook/plugins)
 install(FILES "$<TARGET_PDB_FILE:ThreadGuard>" DESTINATION svencoop/metahook/plugins)
 
-# ThreadGuard ships its own gamedata catalog, pruned to the single global it
-# resolves, in a nested directory the launcher's catalog loader merges
-# (metahook/gamedata/threadguard). The manifest lists that symbol; the
+# ThreadGuard ships its own gamedata catalog, pruned to its engine symbols,
+# in a nested directory the launcher's catalog loader merges
+# (metahook/gamedata/threadguard). The manifest lists those symbols; the
 # synchronizer downloads the upstream catalog into a persistent cache, prunes
 # it, and publishes the result.
 option(THREADGUARD_SYNC_GAMEDATA "Download and prune ThreadGuard's gamedata catalog before building" ON)

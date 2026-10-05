@@ -17,6 +17,10 @@ GoldSrc 的 Win32 线程代码在创建它的模块被卸载时可能仍在运�
 
 该插件还修复了 Valve 的一个 bug：`_restart` 命令没有正确关闭服务器，导致 `CSteam3Server` 对象出现资源泄漏。被 hook 后的 `_restart` 会先执行 `shutdownserver`以正确释放这些资源。
 
+对于 Windows Sven Co-op 8948/10257，ThreadGuard 还会在 `GL_Shutdown` 之前关闭 Steam 客户端，每轮引擎生命周期只调用一次。引擎原来的晚调用通过 `SteamAPI_Shutdown` IAT hook 屏蔽；否则其重启路径会跳过这次关闭，使 Steam 线程遗留到进程退出。处理顺序为 `shutdownserver -> 原始 _restart -> SteamAPI_Shutdown -> GL_Shutdown`，随后允许 launcher 重新加载引擎。参见 [issue #898](https://github.com/hzqst/MetaHookSv/issues/898)。
+
+2026-10-05 实机验证：Windows x86 Sven 10257，MetaHook 正常退出契约为 0。旧版 ThreadGuard 在 `osprey -> _restart -> quit` 后复现 `0xC0000409`，修复后相同对照返回 0。另分别启用和禁用 HalflifeCLI，测试不重启、重启一次、连续重启三次，共六组；每次重启后均确认 `osprey` 和原生 RCON 可用，六组均以 0 退出。Renderer 因已安装版本的独立 gamedata 不匹配问题临时禁用；测试后恢复插件列表和临时 CLI 配置。Release 构建及全部 11 个 gamedata 快照校验通过。8948 仅核实 Windows 调用路径和符号产物，本次未实机验证其他引擎及 Renderer 兼容性。
+
 ## 安装
 
 1. 下载并安装 [MetaHookSv](https://github.com/hzqst/MetaHookSv)。
@@ -25,7 +29,7 @@ GoldSrc 的 Win32 线程代码在创建它的模块被卸载时可能仍在运�
 
 3. 在 `/SteamLibrary/steamapps/common/Sven Co-op/svencoop/metahook/configs/plugins.lst` 中添加 `ThreadGuard.dll`（单独占一行）。
 
-4. 保留随插件一同分发的 `svencoop/metahook/gamedata/threadguard` 目录：其中存放着插件在加载时解析的 `eng` 全局变量。
+4. 保留随插件一同分发的 `svencoop/metahook/gamedata/threadguard` 目录：其中存放着 `eng` 全局变量，以及 Sven Co-op 使用的 `GL_Shutdown` 函数。更新 DLL 时同时更新此目录。
 
 5. 开始游戏。
 

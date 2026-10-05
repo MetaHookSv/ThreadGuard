@@ -11,6 +11,29 @@ static_assert(METAHOOK_API_VERSION >= 109, "ThreadGuard resolves the engine IEng
 hook_t* g_pHook_FreeLibrary_Engine = NULL;
 hook_t* g_pHook_FreeLibrary_GameUI = NULL;
 
+static hook_t* g_pHook_SteamAPI_Shutdown = NULL;
+static hook_t* g_pHook_GL_Shutdown = NULL;
+static void (__cdecl* g_pfn_SteamAPI_Shutdown)(void) = NULL;
+static void (__cdecl* g_pfn_GL_Shutdown)(HWND, HDC, HGLRC) = NULL;
+static bool g_bSteamShutdown = false;
+
+static void __cdecl NewSteamAPI_Shutdown(void)
+{
+	// SvEngine calls this too late on quit and skips it entirely on _restart.
+	// The GL_Shutdown hook owns the call for both paths.
+}
+
+static void __cdecl NewGL_Shutdown(HWND window, HDC dc, HGLRC context)
+{
+	if (!g_bSteamShutdown)
+	{
+		g_bSteamShutdown = true;
+		g_pfn_SteamAPI_Shutdown();
+	}
+
+	g_pfn_GL_Shutdown(window, dc, context);
+}
+
 IThreadManager* g_ThreadManager_Engine = NULL;
 IThreadManager* g_ThreadManager_GameUI = NULL;
 IThreadManager* g_ThreadManager_ServerBrowser = NULL;
@@ -63,12 +86,39 @@ void Engine_FillAddress(void)
 	// gamedata provides the address of the engine module's global IEngine* slot,
 	// so GetEngineDLLState keeps dereferencing it exactly once.
 	eng = (decltype(eng))GamedataResolvePtr(g_EngineDLLInfo.ImageBase, "engine", "eng", MH_GAMESYMBOL_KIND_GLOBAL);
+	if (g_iEngineType == ENGINE_SVENGINE)
+	{
+		g_pfn_GL_Shutdown = (decltype(g_pfn_GL_Shutdown))GamedataResolvePtr(
+			g_EngineDLLInfo.ImageBase, "engine", "GL_Shutdown", MH_GAMESYMBOL_KIND_FUNCTION);
+	}
 }
 
 void Engine_InstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
 {
 	if (hModule)
 	{
+		if (g_iEngineType == ENGINE_SVENGINE)
+		{
+			g_bSteamShutdown = false;
+			g_pHook_SteamAPI_Shutdown = g_pMetaHookAPI->IATHook(hModule,
+				"steam_api.dll", "SteamAPI_Shutdown", NewSteamAPI_Shutdown, (void**)&g_pfn_SteamAPI_Shutdown);
+			// During LoadEngine, MetaHook fills the original pointer at transaction commit.
+			if (!g_pHook_SteamAPI_Shutdown)
+			{
+				Sys_Error("Could not hook engine SteamAPI_Shutdown import!");
+				return;
+			}
+			g_pHook_GL_Shutdown = g_pMetaHookAPI->InlineHook((void*)g_pfn_GL_Shutdown,
+				NewGL_Shutdown, (void**)&g_pfn_GL_Shutdown);
+			if (!g_pHook_GL_Shutdown)
+			{
+				g_pMetaHookAPI->UnHook(g_pHook_SteamAPI_Shutdown);
+				g_pHook_SteamAPI_Shutdown = NULL;
+				Sys_Error("Could not hook engine GL_Shutdown!");
+				return;
+			}
+		}
+
 		g_ThreadManager_Engine = CreateThreadManagerForModule(hModule);
 		g_ThreadManager_Engine->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject | hookflag_Sleep);
 
@@ -86,6 +136,20 @@ void Engine_InstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
 
 void Engine_UninstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
 {
+	if (g_pHook_GL_Shutdown)
+	{
+		g_pMetaHookAPI->UnHook(g_pHook_GL_Shutdown);
+		g_pHook_GL_Shutdown = NULL;
+	}
+	if (g_pHook_SteamAPI_Shutdown)
+	{
+		g_pMetaHookAPI->UnHook(g_pHook_SteamAPI_Shutdown);
+		g_pHook_SteamAPI_Shutdown = NULL;
+	}
+	g_pfn_GL_Shutdown = NULL;
+	g_pfn_SteamAPI_Shutdown = NULL;
+	g_bSteamShutdown = false;
+
 	if (g_pHook_FreeLibrary_Engine)
 	{
 		g_pMetaHookAPI->UnHook(g_pHook_FreeLibrary_Engine);

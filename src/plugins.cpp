@@ -52,9 +52,9 @@ void IPluginsV4::LoadEngine(cl_enginefunc_t *pEngfuncs)
 
 	g_MainThreadId = (HANDLE)GetCurrentThreadId();
 
-	g_pMetaHookAPI->RegisterLoadDllNotificationCallback(DllLoadNotification);
-
 	Engine_FillAddress();
+
+	g_pMetaHookAPI->RegisterLoadDllNotificationCallback(DllLoadNotification);
 }
 
 void IPluginsV4::LoadClient(cl_exportfuncs_t *pExportFunc)

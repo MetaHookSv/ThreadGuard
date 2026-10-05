@@ -19,5 +19,13 @@
     "engine": {
       "eng": "global"
     }
-  }
+  },
+  "conditionalGroups": [
+    {
+      "when": ["svencoop-8948", "svencoop-10257"],
+      "symbols": {
+        "GL_Shutdown": "function"
+      }
+    }
+  ]
 }
