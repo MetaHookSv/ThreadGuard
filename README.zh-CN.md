@@ -57,7 +57,7 @@ cmake -S . -B build/launch -G "Visual Studio 17 2022" -A Win32 -DMETAHOOKSV_ENAB
 
 3. 按照“安装”一节的说明，将 `ThreadGuard.dll` 和 `gamedata\threadguard` 复制到 `svencoop/metahook`。
 
-MetaHook SDK 会在 configure 时自动拉取固定 commit。如需改为针对本地 MetaHook 源码树构建，可在命令行传入，或在 configure 前导出同名环境变量：
+MetaHook SDK 会在 configure 时自动拉取最新的 `main` 分支。如需改为针对本地 MetaHook 源码树构建，可在命令行传入，或在 configure 前导出同名环境变量：
 
 ```
 scripts\build-ThreadGuard-x86-Release.bat -DMETAHOOK_SOURCE_PATH=D:\MetaHook

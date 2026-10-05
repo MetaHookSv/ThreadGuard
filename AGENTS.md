@@ -164,7 +164,7 @@ The scripts configure, build and install. Debug compiles at `/W0`, Release at `/
 
 ### Dependencies
 
-- **MetaHook SDK**: fetched automatically at a pinned commit; pass `-DMETAHOOK_SOURCE_PATH=D:\MetaHook` or export the same environment variable to build against a local tree. The path is the repository root providing `include/metahook.h`, `include/HLSDK` and `include/Interface`
+- **MetaHook SDK**: fetched automatically from the latest `main`; pass `-DMETAHOOK_SOURCE_PATH=D:\MetaHook` or export the same environment variable to build against a local tree. The path is the repository root providing `include/metahook.h`, `include/HLSDK` and `include/Interface`
 - **API surface used**: `ResolveGameSymbol` / `GetGameSymbolStatusString` (through `GamedataResolvePtr`), `RegisterLoadDllNotificationCallback` / `UnregisterLoadDllNotificationCallback`, `IATHook` / `BlobIATHook` / `UnHook`, `HookCmd` / `FindCmd`, `GetModuleBase` / `GetBlobModuleImageBase` / `GetSectionByName` / `GetEngineModule` / `GetBlobEngineModule`, `GetGameDirectory`, `ModuleHasImport` / `ModuleHasImportEx`, `SysError`; from the engine interface, `IEngine::GetState()`
 - **VC-LTL 5.3.1**: downloaded once into `thirdparty/cache`
 - **Nothing else**: no third-party library is linked and no Capstone headers are needed
