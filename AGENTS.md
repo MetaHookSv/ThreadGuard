@@ -6,6 +6,10 @@
 
 It also fixes a Valve bug: the engine's `_restart` command did not shut the server down properly and leaked resources such as `CSteam3Server` — the hooked `_restart` runs `shutdownserver` first.
 
+For SvEngine, Steam client shutdown is moved before `GL_Shutdown`, once per
+engine lifetime. The engine's `SteamAPI_Shutdown` IAT call is suppressed because
+it runs late on normal exit and is skipped on restart (MetaHookSv issue #898).
+
 - **Project type**: Native C++ plugin (Windows DLL), MSVC x86 only
 - **Engine**: GoldSrc / SvEngine, with Sven Co-op specific gates (see Engine Compatibility)
 - **Framework**: MetaHookSV Plugin API (`IPluginsV4`, API 109 or newer; `LoadEngine` also rejects a launcher whose `MetaHookAPIVersion` is lower than the SDK constant)
@@ -32,7 +36,7 @@ ThreadGuard/
 │   └── VCLTL.cmake            # VC-LTL 5.3.1
 ├── scripts/
 │   ├── build-ThreadGuard-x86-{Debug,Release}.bat
-│   ├── manifests/threadguard.json      # Gamedata manifest (one engine global)
+│   ├── manifests/threadguard.json      # eng global + SvEngine GL_Shutdown
 │   ├── sync-gamedata.py                # Prunes the upstream catalog into the build tree
 │   └── validate-gamedata.py            # Validates it before the plugin target builds
 ├── thirdparty/cache/          # Ignored VC-LTL binary cache
@@ -50,7 +54,7 @@ There is no `docs/` directory, no assets and no test suite.
 
 `IPluginsV4` exported through `EXPOSE_SINGLE_INTERFACE(IPluginsV4, IPluginsV4, METAHOOK_PLUGIN_API_VERSION_V4)`:
 
-- `LoadEngine`: rejects a mismatched host with `Sys_Error("MetaHookAPIVersion too low! expect %d, got %d !")`, collects the file system and engine type/buildnum, copies `cl_enginefunc_t`, records `g_MainThreadId` with `GetCurrentThreadId()`, registers `DllLoadNotification` and resolves the `eng` slot. It installs **no** hooks directly
+- `LoadEngine`: rejects a mismatched host with `Sys_Error("MetaHookAPIVersion too low! expect %d, got %d !")`, collects the file system and engine type/buildnum, copies `cl_enginefunc_t`, records `g_MainThreadId` with `GetCurrentThreadId()`, resolves `eng` and (SvEngine only) `GL_Shutdown`, then registers `DllLoadNotification`. It installs **no** hooks directly
 - `LoadClient`: copies the export table and calls `EngineCommand_InstallHook()` (the `_restart` fix)
 - `ExitGame`: calls `Engine_WaitForShutdown(GetEngineModule(), GetBlobEngineModule())`
 - `Shutdown`: unregisters the DLL-notification callback
@@ -73,6 +77,14 @@ Two deliberate gates:
 - `server.dll` is tracked for `CreateThread` only — the comment is "Fuck off the CPlayerDatabase_RunThread" — and only under `svencoop`
 
 `InstallHook` uses `IATHook` for real modules and `BlobIATHook` for the blob engine, so only calls that go through that module's import table are intercepted.
+
+SvEngine additionally installs an engine `SteamAPI_Shutdown` IAT hook and a
+gamedata-resolved `GL_Shutdown(HWND, HDC, HGLRC)` cdecl inline hook. The former
+suppresses the engine call; the latter calls the saved Steam API original once
+before forwarding all three arguments. MetaHook fills saved original pointers
+at hook transaction commit, so they must not be checked for null immediately
+after enqueueing the hook. Both handles and per-engine state are cleared during
+engine unload. Other engine families retain their existing shutdown behavior.
 
 The `FreeLibrary` hooks are how the plugin catches the unload of modules it does not own: `NewFreeLibrary_Engine` waits for the **`server.dll`** manager when the module being freed is the tracked one, and `NewFreeLibrary_GameUI` does the same for the **`ServerBrowser.dll`** manager. Both then forward to the real `FreeLibrary`.
 
@@ -161,7 +173,7 @@ Keep `cmake/Sources.cmake` as the explicit compile list (4 plugin units); `inclu
 
 ### gamedata
 
-`scripts/manifests/threadguard.json` declares a single `engine` / **`eng`** global — the catalog symbol name is `eng`, not `engine` — across 11 engine snapshots (`cof-5936`, `hl-10210`, `hl-3248`, `hl-3266`, `hl-3329`, `hl-3647`, `hl-4554`, `hl-6153`, `hl-8684`, `svencoop-10257`, `svencoop-8948`). There are no function or patch records.
+`scripts/manifests/threadguard.json` declares the `engine` / **`eng`** global — the catalog symbol name is `eng`, not `engine` — across 11 engine snapshots (`cof-5936`, `hl-10210`, `hl-3248`, `hl-3266`, `hl-3329`, `hl-3647`, `hl-4554`, `hl-6153`, `hl-8684`, `svencoop-10257`, `svencoop-8948`). A conditional group additionally requires the `GL_Shutdown` function for both Sven snapshots. There are no patch records.
 
 `scripts/manifests/threadguard.json` → `scripts/sync-gamedata.py` → pruned catalog under `build/x86/<Configuration>/assets/svencoop/metahook/gamedata/threadguard`, validated by `scripts/validate-gamedata.py` before the plugin target builds. Disable with `-DTHREADGUARD_SYNC_GAMEDATA=OFF`. When gamedata usage changes, update the manifest in the same change.
 

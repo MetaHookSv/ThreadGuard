@@ -15,6 +15,24 @@ Managed modules:
 
 It also fixes a Valve bug where the `_restart` command did not shut the server down properly, leaking resources such as `CSteam3Server`: the hooked `_restart` runs `shutdownserver` first.
 
+On Windows Sven Co-op 8948/10257, ThreadGuard also closes the Steam client before
+`GL_Shutdown`, once per engine lifetime. SvEngine's original late
+`SteamAPI_Shutdown` import call is suppressed; its restart path otherwise skips
+that call and can leave Steam threads alive until process teardown. This keeps
+the order `shutdownserver -> original _restart -> SteamAPI_Shutdown -> GL_Shutdown`
+without exiting the launcher. See [issue #898](https://github.com/hzqst/MetaHookSv/issues/898).
+
+Verified on 2026-10-05 with Windows x86 Sven 10257 and MetaHook's normal exit
+code 0 contract: the old ThreadGuard reproduced `0xC0000409` after
+`osprey -> _restart -> quit`; the fixed DLL returned 0 for the same control.
+Six further runs covered zero, one and three restarts, with HalflifeCLI both
+enabled and disabled. Every restart restored `osprey` and native RCON, and all
+six processes exited with 0. Renderer was temporarily disabled because of its
+unrelated installed gamedata mismatch; plugin lists and temporary CLI config
+were restored afterward. The Release build and all 11 gamedata snapshots passed
+validation. Sven 8948 has Windows code-path and catalog verification only;
+other engines and Renderer compatibility were not runtime-tested in this change.
+
 # Install
 
 1. Download and install [MetaHookSv](https://github.com/hzqst/MetaHookSv).
@@ -23,7 +41,7 @@ It also fixes a Valve bug where the `_restart` command did not shut the server d
 
 3. Add `ThreadGuard.dll` in `/SteamLibrary/steamapps/common/Sven Co-op/svencoop/metahook/configs/plugins.lst` as a newline.
 
-4. Keep the `svencoop/metahook/gamedata/threadguard` directory shipped next to the plugin: it carries the `eng` global the plugin resolves at load time.
+4. Keep the `svencoop/metahook/gamedata/threadguard` directory shipped next to the plugin: it carries the `eng` global and, for Sven Co-op, the `GL_Shutdown` function. Update this catalog together with the DLL.
 
 5. Enjoy.
 
