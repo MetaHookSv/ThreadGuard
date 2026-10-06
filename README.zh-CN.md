@@ -17,6 +17,10 @@ GoldSrc 的 Win32 线程代码在创建它的模块被卸载时可能仍在运�
 
 该插件还修复了 Valve 的一个 bug：`_restart` 命令没有正确关闭服务器，导致 `CSteam3Server` 对象出现资源泄漏。被 hook 后的 `_restart` 会先执行 `shutdownserver`以正确释放这些资源。
 
+普通 PE 与 BLOB 引擎都安装 `FreeLibrary` hook，在关闭或重启时，先等待 GameUI 的受管线程退出，再卸载 GameUI；GameUI 自身的 `FreeLibrary` hook 保留对 ServerBrowser 的同类保护，避免 socket 线程在持有 loader lock 的析构阶段被强杀、遗留 CRT 锁。旧版 GameUI/ServerBrowser 工作线程的 `select` 等待限制为 20 ms；收到终止请求后，`select` 返回无就绪 socket，`recvfrom` 返回 `WSAEWOULDBLOCK`，使非阻塞收包循环正常释放锁，再到达原有的退出事件检查。主线程的 socket 调用及 socket 超时选项不变，兼容两种 Winsock DLL 导入名称，并保留仅使用回调模型的模块排除规则。
+
+GameUI 修复的 Debug / Release 构建和测试通过，覆盖空闲及持续 UDP 收包、卸载前等待顺序。真实 HL 3266 调试记录确认 GameUI socket 线程在 DLL 析构前退出，两轮重启测试返回 0；重复测试也出现重新加载期间的堆损坏，以及两轮网络线程均已完成等待后发生的引擎分配器退出卡住，因此不能视为该完整安装的重启已稳定通过。HL 10210、CoF 5936 的退出测试及 Sven 10257 的加载地图、重启、退出测试返回 0。其他快照保留目录覆盖，本次未逐一启动。关闭阶段的诊断使用 `OutputDebugStringA`，因为 GameUI 控制台可能已经关闭；普通 CLI 控制台捕获不会收到这些日志。
+
 全部 11 个受支持的 Windows 引擎快照（`hl-*`，包括 BLOB；`svencoop-*`；`cof-*`）使用网络线程协作退出。直接 `TerminateThread` 可能使工作线程遗留 Steam 锁，从而挂起退出。ThreadGuard 通过 `NET_ThreadFunc` 识别每次创建，持有独立的 duplicate 句柄，并核对 `dwNetThreadId` 的运行时值。引擎针对该线程的 `TerminateThread` 调用改为发出退出请求并等待真实线程结束；网络线程在已经解锁的循环末尾 `Sleep(1)` 中调用 `ExitThread(0)`。其他线程的终止调用保留原行为。
 
 仅将该网络线程的 `select` 等待上限设为 20 ms，更短的超时保持原值。收到退出请求后，`NET_QueuePacket` 返回无包，使持续收包的循环也能正常解锁并走到 Sleep。不会提前清零网络状态，不关闭调用方拥有的句柄，也不在等待超时后回退强杀。创建时先发布身份再恢复线程，重建或重新加载引擎时复位退出请求。参见 [issue #4](https://github.com/MetaHookSv/ThreadGuard/issues/4)。

@@ -38,6 +38,8 @@ static bool NetworkExitRequested()
 
 static void NetworkTrace(const char* event, DWORD id)
 {
+	// The worker can log during DLL/FLS teardown after the GameUI console has
+	// shut down. Do not call the engine console from this thread/phase.
 	char message[160];
 	sprintf_s(message, "[ThreadGuard] network thread %lu: %s\n", id, event);
 	OutputDebugStringA(message);
@@ -296,6 +298,39 @@ void WINAPI NewSleep(DWORD dwMilliseconds)
 	return Sleep(dwMilliseconds);
 }
 
+static int WSAAPI NewSocketSelect(int nfds, fd_set* read, fd_set* write, fd_set* except, const timeval* timeout)
+{
+	auto manager = FindThreadManagerByVirtualAddress(_ReturnAddress());
+	if (manager && (HANDLE)GetCurrentThreadId() != g_MainThreadId)
+	{
+		if (manager->OnSleep(1))
+		{
+			if (read) FD_ZERO(read);
+			if (write) FD_ZERO(write);
+			if (except) FD_ZERO(except);
+			return 0;
+		}
+		const timeval poll = { 0, kNetworkPollMicroseconds };
+		if (!timeout || timeout->tv_sec > 0 || timeout->tv_usec > poll.tv_usec)
+			return select(nfds, read, write, except, &poll);
+	}
+	return select(nfds, read, write, except, timeout);
+}
+
+static int WSAAPI NewSocketRecvFrom(SOCKET socket, char* buffer, int length, int flags, sockaddr* from, int* fromLength)
+{
+	auto manager = FindThreadManagerByVirtualAddress(_ReturnAddress());
+	// CSocketThread uses nonblocking sockets. Break its drain loop without
+	// exiting while it owns the socket-list lock; the loop unlocks normally
+	// before observing termination at WaitForSingleObject(event, 0).
+	if (manager && manager->OnSleep(1))
+	{
+		WSASetLastError(WSAEWOULDBLOCK);
+		return SOCKET_ERROR;
+	}
+	return recvfrom(socket, buffer, length, flags, from, fromLength);
+}
+
 class CThreadManager : public IThreadManager
 {
 
@@ -322,6 +357,9 @@ private:
 
 	//for hw.dll
 	hook_t* m_pHook_Sleep;
+	static constexpr unsigned kSocketImportLibraryCount = 2;
+	static constexpr unsigned kSocketHooksPerLibrary = 2;
+	hook_t* m_pHook_Socket[kSocketImportLibraryCount * kSocketHooksPerLibrary];
 
 	std::atomic<bool> m_bStartTermination;
 public:
@@ -353,6 +391,7 @@ public:
 		m_pHook_CreateThread = NULL;
 		m_pHook_WaitForSingleObject = NULL;
 		m_pHook_Sleep = NULL;
+		memset(m_pHook_Socket, 0, sizeof(m_pHook_Socket));
 
 		m_bStartTermination = false;
 	}
@@ -418,6 +457,25 @@ public:
 
 			if (flags & hookflag_Sleep)
 				m_pHook_Sleep = g_pMetaHookAPI->IATHook(m_hModule, "kernel32.dll", "Sleep", NewSleep, NULL);
+			if (flags & hookflag_Socket)
+			{
+				unsigned index = 0;
+				for (auto dll : { "wsock32.dll", "ws2_32.dll" })
+				{
+					if (g_pMetaHookAPI->ModuleHasImportEx(m_hModule, dll, "select"))
+					{
+						m_pHook_Socket[index] = g_pMetaHookAPI->IATHook(m_hModule, dll, "select", NewSocketSelect, NULL);
+						if (!m_pHook_Socket[index]) Sys_Error("Could not hook socket select import!");
+					}
+					++index;
+					if (g_pMetaHookAPI->ModuleHasImportEx(m_hModule, dll, "recvfrom"))
+					{
+						m_pHook_Socket[index] = g_pMetaHookAPI->IATHook(m_hModule, dll, "recvfrom", NewSocketRecvFrom, NULL);
+						if (!m_pHook_Socket[index]) Sys_Error("Could not hook socket recvfrom import!");
+					}
+					++index;
+				}
+			}
 		}
 		else if (m_hBlobModule)
 		{
@@ -434,6 +492,11 @@ public:
 
 	void UnistallHook(void) override
 	{
+		for (auto& hook : m_pHook_Socket)
+		{
+			if (hook) g_pMetaHookAPI->UnHook(hook);
+			hook = NULL;
+		}
 #if 0
 		if (m_pHook_DllMain)
 		{
