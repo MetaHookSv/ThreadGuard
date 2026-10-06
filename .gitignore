@@ -5,3 +5,4 @@
 /install/
 /thirdparty/cache/
 *.user
+__pycache__/
