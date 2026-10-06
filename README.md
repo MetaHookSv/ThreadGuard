@@ -26,7 +26,15 @@ locks and reaches the existing shutdown-event check. Main-thread socket calls
 and socket timeout options are unchanged. Both Winsock import DLL names are
 supported; callback-only module exclusions remain intact.
 
-The GameUI change was checked with Debug/Release builds and handler tests for
+At the engine's `ExitGame` lifecycle callback, ThreadGuard always requests and
+joins its remaining managed workers before CRT detach. It does not require
+`GetState()` to still report closing or restarting: HL 3266's `CEngine::Unload`
+has already reset it to `DLL_INACTIVE`. Skipping this join allowed old Steam
+discovery workers to access allocations from the previous engine lifetime and
+leave the small-block allocator locked after an access violation. The earlier
+module-unload gates and network shutdown ordering remain unchanged.
+
+Before the ExitGame fix, the GameUI change was checked with Debug/Release builds and handler tests for
 idle/continuous UDP receive and unload ordering. Real HL 3266 debugger evidence
 shows its GameUI socket worker exiting before the DLL destructor; two restart
 runs exited 0. Repeated runs also exposed heap corruption during reload and an
@@ -36,6 +44,14 @@ HL 10210 and CoF 5936 exit tests and Sven 10257's map/restart/quit test exited 0
 Other snapshots retain catalog coverage but were not launched for this change.
 Teardown diagnostics use OutputDebugStringA because the GameUI console can
 already be shut down; ordinary CLI console capture does not receive them.
+
+The ExitGame fix passed Debug/Release builds and both CTests, including a real
+worker that must finish cleanup before the inactive-state lifecycle callback
+returns. Five original HL 3266 BLOB map/restart/quit runs exited 0 without the
+previous access violations. HL 10210 and CoF 5936 exit checks and Sven 10257's
+map/restart/quit check also exited 0. All 11 catalog snapshots validated; the
+other seven were not individually launched. The separate earlier heap-corruption
+crash is not independently proven to have the same cause.
 
 Network threads shut down cooperatively on all 11 supported Windows engine
 snapshots (`hl-*`, including BLOB, `svencoop-*`, and `cof-*`). Killing this worker

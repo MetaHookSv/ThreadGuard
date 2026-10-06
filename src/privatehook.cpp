@@ -79,7 +79,10 @@ BOOL WINAPI NewFreeLibrary_GameUI(HMODULE hModule)
 
 void Engine_WaitForShutdown(HMODULE hModule, BlobHandle_t hBlobModule)
 {
-	if (g_ThreadManager_Engine && (GetEngineDLLState() == DLL_CLOSE || GetEngineDLLState() == DLL_RESTART))
+	// ExitGame runs after EngineAPI::Run returns and before the engine's CRT
+	// detach. CEngine::Unload may already have reset GetState() to DLL_INACTIVE;
+	// the lifecycle callback itself requires joining every remaining worker.
+	if (g_ThreadManager_Engine)
 	{
 		g_ThreadManager_Engine->StartTermination();
 		g_ThreadManager_Engine->WaitForAliveThreadsToShutdown();

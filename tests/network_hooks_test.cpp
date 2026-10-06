@@ -121,6 +121,56 @@ static void CheckUnloadRouting()
 	eng = NULL;
 }
 
+struct EngineExitContext
+{
+	IThreadManager* manager;
+	HANDLE started;
+	HANDLE cleaned;
+};
+
+static DWORD WINAPI EngineExitWorker(void* argument)
+{
+	auto context = static_cast<EngineExitContext*>(argument);
+	SetEvent(context->started);
+	while (!context->manager->OnSleep(1)) Sleep(1);
+	// Resource cleanup must finish before the engine lifecycle callback returns.
+	SetEvent(context->cleaned);
+	return 0;
+}
+
+static void CheckEngineExit()
+{
+	TestEngine engine;
+	IEngine* enginePointer = &engine;
+	for (int state : { DLL_INACTIVE, DLL_CLOSE, DLL_RESTART, DLL_ACTIVE, -1 })
+	{
+		engine.state = state;
+		eng = state == -1 ? NULL : &enginePointer;
+		CThreadManager manager(NULL, NULL);
+		g_ThreadManager_Engine = &manager;
+		EngineExitContext context = { &manager, CreateEvent(NULL, TRUE, FALSE, NULL),
+			CreateEvent(NULL, TRUE, FALSE, NULL) };
+		CHECK(context.started && context.cleaned);
+		HANDLE worker = CreateThread(NULL, 0, EngineExitWorker, &context, 0, NULL);
+		CHECK(worker != NULL);
+		HANDLE duplicate = NULL;
+		CHECK(DuplicateHandle(GetCurrentProcess(), worker, GetCurrentProcess(), &duplicate,
+			0, FALSE, DUPLICATE_SAME_ACCESS));
+		static_cast<IThreadManager&>(manager).OnCreateThread(duplicate);
+		CHECK(WAIT_OBJECT_0 == WaitForSingleObject(context.started, 5000));
+		Engine_WaitForShutdown(NULL, NULL);
+		CHECK(WAIT_OBJECT_0 == WaitForSingleObject(context.cleaned, 0));
+		CHECK(WAIT_OBJECT_0 == WaitForSingleObject(worker, 0));
+		Engine_WaitForShutdown(NULL, NULL);
+		CloseHandle(worker);
+		CloseHandle(context.started);
+		CloseHandle(context.cleaned);
+	}
+	eng = NULL;
+	g_ThreadManager_Engine = NULL;
+	Engine_WaitForShutdown(NULL, NULL);
+}
+
 static DWORD engineThreadId;
 static SOCKET socketHandle = INVALID_SOCKET;
 static HANDLE shutdownWorker = NULL;
@@ -286,6 +336,7 @@ int main()
 	g_pMetaHookAPI = &api;
 	g_MainThreadId = (HANDLE)GetCurrentThreadId();
 	CheckUnloadRouting();
+	CheckEngineExit();
 	TestManager manager;
 	AddThreadManager(&manager);
 	g_NetworkManager = &manager;
