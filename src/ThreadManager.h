@@ -35,3 +35,7 @@ void DeleteThreadManager(IThreadManager* p);
 IThreadManager* FindThreadManagerByVirtualAddress(PVOID VirtualAddress);
 IThreadManager* CreateThreadManagerForModule(HMODULE hModule);
 IThreadManager* CreateThreadManagerForBlob(BlobHandle_t hBlob);
+
+void NetworkThread_Configure(LPTHREAD_START_ROUTINE entry, DWORD* threadId, void* queuePacket, void* shutdown);
+void NetworkThread_InstallHook(IThreadManager* manager);
+void NetworkThread_UninstallHook();

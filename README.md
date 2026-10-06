@@ -15,6 +15,30 @@ Managed modules:
 
 It also fixes a Valve bug where the `_restart` command did not shut the server down properly, leaking resources such as `CSteam3Server`: the hooked `_restart` runs `shutdownserver` first.
 
+Network threads shut down cooperatively on all 11 supported Windows engine
+snapshots (`hl-*`, including BLOB, `svencoop-*`, and `cof-*`). Killing this worker
+with `TerminateThread` can abandon a Steam lock and hang shutdown. ThreadGuard
+identifies each creation through `NET_ThreadFunc`, tracks its own duplicate
+handle, and checks the live `dwNetThreadId` value. The engine's target
+`TerminateThread` call instead requests exit and waits for the real thread to
+finish. The worker calls `ExitThread(0)` from its unlocked `Sleep(1)` loop tail.
+Other threads' termination calls keep their original behavior.
+
+The `NET_Shutdown` entry hook requests and joins this worker before calling the
+original shutdown. All 11 Windows binaries close sockets before their original
+thread stop, and the worker calls `select` outside the network lock. Waiting at
+entry prevents that shutdown from closing sockets under an in-flight `select`
+and prevents the worker from repopulating the lag queues during cleanup. The
+original function still owns queue cleanup, socket closure and lock destruction.
+Repeated shutdown and disabled threaded networking retain original cleanup.
+
+Only this worker's `select` waits are capped at 20 ms (shorter waits are kept).
+After an exit request, `NET_QueuePacket` returns no packet, allowing even a busy
+receive loop to unlock and reach that sleep. No network flags are cleared early,
+no caller-owned handles are closed, and there is no timeout fallback to a forced
+kill. Creation publishes the identity before resuming the worker, and recreation
+or engine reload resets the request. See [issue #4](https://github.com/MetaHookSv/ThreadGuard/issues/4).
+
 On Windows Sven Co-op 8948/10257, ThreadGuard also closes the Steam client before
 `GL_Shutdown`, once per engine lifetime. SvEngine's original late
 `SteamAPI_Shutdown` import call is suppressed; its restart path otherwise skips
@@ -41,9 +65,32 @@ other engines and Renderer compatibility were not runtime-tested in this change.
 
 3. Add `ThreadGuard.dll` in `/SteamLibrary/steamapps/common/Sven Co-op/svencoop/metahook/configs/plugins.lst` as a newline.
 
-4. Keep the `svencoop/metahook/gamedata/threadguard` directory shipped next to the plugin: it carries the `eng` global and, for Sven Co-op, the `GL_Shutdown` function. Update this catalog together with the DLL.
+4. Keep the `svencoop/metahook/gamedata/threadguard` directory shipped next to the plugin: it carries `eng`, `NET_ThreadFunc`, `dwNetThreadId`, `NET_QueuePacket`, `NET_Shutdown`, and, for Sven Co-op, `GL_Shutdown`. Update this catalog together with the DLL. `NET_StartThread` is not required because HL25 inlines it.
 
 5. Enjoy.
+
+Verified on 2026-10-06: Debug and Release targeted tests passed, including 100
+real-thread stop/recreate cycles, infinite select, continuous receive and handle
+reclamation. Sven 10257 passed 50 input-command exits and five controls. HL 10210,
+HL 3266 BLOB and CoF 5936 recorded the request, safe Sleep exit and signaled wait,
+and exited with code 0. The CoF input-command scenario lost RCON before quit; its
+dump was retained and that scenario is not counted as passing. Other snapshots
+have symbol generation, catalog validation and static call-path coverage only.
+
+After adding the pre-cleanup entry hook, the ordering regression first failed
+with a live worker in the original resource callback, then passed in Debug and
+Release. The 100-cycle handler test includes idle/busy workers, real socket
+closure after join, repeated shutdown and disabled networking. Live verification
+passed eight Sven 10257 cases (including disconnect, restart and no-network)
+and one shutdown each on HL 10210, HL 3266 BLOB and CoF 5936. All exited with 0;
+threaded runs logged the completed wait before original resource cleanup.
+Game DLLs, launcher, catalogs and temporary configuration were restored.
+
+BLOB engines require MetaHook's ordinal-import fix: the loader records ordinal
+imports and matches their original export addresses for named `BlobIATHook` and
+`BlobHasImportEx` queries. No hardcoded ordinal or `select_import` gamedata is
+needed. Publishing this change also requires upstream `NET_QueuePacket` symbols
+for all 11 snapshots; local verification used the generated, validated catalog.
 
 ## F5 debugging (optional)
 
@@ -78,3 +125,19 @@ scripts\build-ThreadGuard-x86-Release.bat -DMETAHOOK_SOURCE_PATH=D:\MetaHook
 The path is the repository root that provides `include/metahook.h`, `include/HLSDK` and `include/Interface`.
 
 ThreadGuard resolves its symbols from the MetaHook gamedata catalog, links no third-party library and needs no Capstone headers. Pass `-DTHREADGUARD_SYNC_GAMEDATA=OFF` to build without downloading gamedata.
+
+## Targeted tests
+
+```powershell
+cmake -S tests -B build/tests -A Win32 -DMETAHOOK_SOURCE_PATH=D:/MetaHookSv/MetaHook
+cmake --build build/tests --config Release
+ctest --test-dir build/tests -C Release --output-on-failure
+```
+
+Repeat with `Debug` for the debug configuration. These standalone tests use real
+Win32 threads, sockets, locks and waits, but provide only the host's fatal-error
+callback. They cover handler behavior, not MetaHook's IAT installation or gamedata
+resolution; those require live game verification. The handler test includes 100
+stop/recreate cycles with idle sockets and continuous packets, creation failure,
+suspended creation, non-target forwarding and handle counts. Debugger output
+records the real stop request, safe sleep exit and signaled wait in a game run.

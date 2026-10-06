@@ -17,7 +17,11 @@
   ],
   "symbols": {
     "engine": {
-      "eng": "global"
+      "eng": "global",
+      "NET_ThreadFunc": "function",
+      "dwNetThreadId": "global",
+      "NET_QueuePacket": "function",
+      "NET_Shutdown": "function"
     }
   },
   "conditionalGroups": [
