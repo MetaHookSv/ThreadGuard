@@ -148,10 +148,11 @@ handle already being waited on. The `#if 0` closed-thread path stays disabled.
 
 ### 4. Termination gates
 
-Actual waiting only happens when the engine reports `DLL_CLOSE` or `DLL_RESTART`:
+Module FreeLibrary waits require `DLL_CLOSE` or `DLL_RESTART`; the engine's
+ExitGame lifecycle wait is unconditional when its manager exists:
 
 - `GetEngineDLLState()` returns `(*eng)->GetState()` and `DLL_INACTIVE` when the slot is null — the slot is dereferenced exactly once
-- `Engine_WaitForShutdown` (from `ExitGame`) applies that gate to the engine manager; its `hModule` / `hBlobModule` parameters are unused in the body
+- `Engine_WaitForShutdown` (from `ExitGame`) always requests and joins the engine manager before CRT detach. HL 3266's `CEngine::Unload` resets the state to `DLL_INACTIVE` before this callback; applying the module gate here lets old Steam workers outlive their heap and corrupt the next engine lifetime. Its `hModule` / `hBlobModule` parameters are unused in the body
 - `GameUI_WaitForShutdown`, `ServerDLL_WaitForShutdown` and `ServerBrowser_WaitForShutdown` apply the same gate and are triggered by the `FreeLibrary` hooks above
 
 Each path calls `StartTermination()` and then `WaitForAliveThreadsToShutdown()` on its own manager.
@@ -293,7 +294,7 @@ Runtime configuration: `ThreadGuard.dll` must be listed in the host's `metahook/
 - Preserve the MetaHook API, plugin exports and calling conventions. Match the naming, indentation and comment style of the files you touch
 - Resolve engine symbols only through the host gamedata contract. Do not add a signature-scan fallback for `eng`; keep the catalog name `eng` (not `engine`) and the fatal `Could not resolve gamedata symbol: ...` diagnostic
 - Keep the wrapper semantics explicit: `NewCreateThread` must still duplicate the handle before handing it to a manager and must return the original handle, and the `Sleep(1)` / `WaitForSingleObject(0)` short-circuits must stay gated on `StartTermination` and, for `Sleep`, on the non-main-thread check
-- Keep the termination gate (`DLL_CLOSE` / `DLL_RESTART` via `(*eng)->GetState()`) and per-module hook flags intact; `server.dll` tracking is Sven-only, while the engine `FreeLibrary` hook must protect GameUI on every PE/BLOB family
+- Keep the module FreeLibrary termination gate (`DLL_CLOSE` / `DLL_RESTART` via `(*eng)->GetState()`) and per-module hook flags intact. Engine ExitGame must join regardless of runtime state; `server.dll` tracking is Sven-only, while the engine `FreeLibrary` hook must protect GameUI on every PE/BLOB family
 - The fixed `MAXIMUM_WAIT_OBJECTS` handle pool and its "already signaled slot" reclamation are part of the design; a full pool must keep failing loudly rather than silently dropping a thread
 - The `#if 0` closed-thread path is intentionally disabled. Do not re-enable it as part of an unrelated change
 - When gamedata usage changes, update `scripts/manifests/threadguard.json` in the same change
