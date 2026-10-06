@@ -15,6 +15,28 @@ Managed modules:
 
 It also fixes a Valve bug where the `_restart` command did not shut the server down properly, leaking resources such as `CSteam3Server`: the hooked `_restart` runs `shutdownserver` first.
 
+The engine's `FreeLibrary` import is hooked on both PE and BLOB engines. During
+shutdown/restart it joins GameUI's managed workers before unloading GameUI;
+GameUI's own `FreeLibrary` hook already does the same for ServerBrowser. This
+keeps their socket-thread destructors from killing live workers under the loader
+lock and abandoning CRT locks. Legacy GameUI/ServerBrowser worker `select` waits
+are capped at 20 ms. After termination starts, `select` reports no ready sockets
+and `recvfrom` reports `WSAEWOULDBLOCK`, so the nonblocking drain loop releases its
+locks and reaches the existing shutdown-event check. Main-thread socket calls
+and socket timeout options are unchanged. Both Winsock import DLL names are
+supported; callback-only module exclusions remain intact.
+
+The GameUI change was checked with Debug/Release builds and handler tests for
+idle/continuous UDP receive and unload ordering. Real HL 3266 debugger evidence
+shows its GameUI socket worker exiting before the DLL destructor; two restart
+runs exited 0. Repeated runs also exposed heap corruption during reload and an
+engine allocator shutdown hang after both network joins had completed, so the
+full HL 3266 installation is not considered a consistently passing restart test.
+HL 10210 and CoF 5936 exit tests and Sven 10257's map/restart/quit test exited 0.
+Other snapshots retain catalog coverage but were not launched for this change.
+Teardown diagnostics use OutputDebugStringA because the GameUI console can
+already be shut down; ordinary CLI console capture does not receive them.
+
 Network threads shut down cooperatively on all 11 supported Windows engine
 snapshots (`hl-*`, including BLOB, `svencoop-*`, and `cof-*`). Killing this worker
 with `TerminateThread` can abandon a Steam lock and hang shutdown. ThreadGuard

@@ -6,6 +6,7 @@
 const int hookflag_CreateThread = 1;
 const int hookflag_WaitForSingleObject = 2;
 const int hookflag_Sleep = 4;
+const int hookflag_Socket = 8;
 
 class IThreadManager : public IBaseInterface
 {

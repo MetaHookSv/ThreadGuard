@@ -90,9 +90,9 @@ All hooks are installed and removed from the DLL load/unload notification — no
 
 | Managed module | Hook flags | Extra |
 | --- | --- | --- |
-| engine (`hw.dll`, or the blob engine) | `CreateThread \| WaitForSingleObject \| Sleep` | network-only `TerminateThread`/`select` IAT hooks and `NET_QueuePacket`/`NET_Shutdown` inline hooks; `FreeLibrary` IAT hook only when the game directory is `svencoop` |
-| `GameUI.dll` | `CreateThread \| WaitForSingleObject` | `FreeLibrary` IAT hook on **GameUI's** import table |
-| `ServerBrowser.dll` | `CreateThread \| WaitForSingleObject` | — |
+| engine (`hw.dll`, or the blob engine) | `CreateThread \| WaitForSingleObject \| Sleep` | network-only `TerminateThread`/`select` IAT hooks and `NET_QueuePacket`/`NET_Shutdown` inline hooks; `FreeLibrary` IAT/BlobIAT hook for all families |
+| `GameUI.dll` | `CreateThread \| WaitForSingleObject \| Socket` | `FreeLibrary` IAT hook on **GameUI's** import table |
+| `ServerBrowser.dll` | `CreateThread \| WaitForSingleObject \| Socket` | — |
 | `server.dll` | `CreateThread` only | enabled only when the game directory is `svencoop` |
 
 Two deliberate gates:
@@ -110,7 +110,9 @@ at hook transaction commit, so they must not be checked for null immediately
 after enqueueing the hook. Both handles and per-engine state are cleared during
 engine unload. Other engine families retain their existing shutdown behavior.
 
-The `FreeLibrary` hooks are how the plugin catches the unload of modules it does not own: `NewFreeLibrary_Engine` waits for the **`server.dll`** manager when the module being freed is the tracked one, and `NewFreeLibrary_GameUI` does the same for the **`ServerBrowser.dll`** manager. Both then forward to the real `FreeLibrary`.
+The `FreeLibrary` hooks catch unloads before the loader lock: `NewFreeLibrary_Engine` waits for the matching **GameUI** or **server.dll** manager, and `NewFreeLibrary_GameUI` waits for **ServerBrowser**. The engine hook is installed for every PE/BLOB family; server.dll tracking remains Sven-only. Both handlers then forward to real `FreeLibrary`.
+
+`hookflag_Socket` installs `select` and `recvfrom` IAT hooks for present wsock32.dll/ws2_32.dll imports. Non-main worker select waits are capped at 20 ms; during manager termination select clears the fd sets and returns zero, while recvfrom returns SOCKET_ERROR/WSAEWOULDBLOCK. Legacy CSocketThread sockets are nonblocking; this breaks continuous receive without exiting under the socket lock. The loop unlocks and reaches the existing zero-timeout shutdown poll. No SO_RCVTIMEO option is modified. Never replace TerminateThread with a join in CSocketThread's destructor: it already holds the socket lock and can run under the loader lock.
 
 ### 3. Thread managers (`src/ThreadManager.cpp`)
 
@@ -150,7 +152,7 @@ Actual waiting only happens when the engine reports `DLL_CLOSE` or `DLL_RESTART`
 
 - `GetEngineDLLState()` returns `(*eng)->GetState()` and `DLL_INACTIVE` when the slot is null — the slot is dereferenced exactly once
 - `Engine_WaitForShutdown` (from `ExitGame`) applies that gate to the engine manager; its `hModule` / `hBlobModule` parameters are unused in the body
-- `ServerDLL_WaitForShutdown` and `ServerBrowser_WaitForShutdown` apply the same gate and are triggered by the `FreeLibrary` hooks above
+- `GameUI_WaitForShutdown`, `ServerDLL_WaitForShutdown` and `ServerBrowser_WaitForShutdown` apply the same gate and are triggered by the `FreeLibrary` hooks above
 
 Each path calls `StartTermination()` and then `WaitForAliveThreadsToShutdown()` on its own manager.
 
@@ -249,7 +251,7 @@ README). These tests do not replace live hook routing/shutdown verification.
 | `cof-5936` (Cry of Fear) | ✅ |
 | Any build absent from the catalog | ❌ fatal at `LoadEngine` |
 
-Catalog coverage is not a correctness statement. Two further Sven Co-op specific gates are applied at runtime: the engine `FreeLibrary` hook and `server.dll` tracking are both limited to a `svencoop` game directory, and `GameUI.dll` / `ServerBrowser.dll` are skipped when they use the Steam callback model.
+Catalog coverage is not a correctness statement. The engine `FreeLibrary` hook covers PE and BLOB engines of every family. Only `server.dll` tracking is limited to a `svencoop` game directory; `GameUI.dll` / `ServerBrowser.dll` are skipped when they use the Steam callback model.
 
 ## Important Constants, Macros and Types
 
@@ -259,7 +261,7 @@ static_assert(METAHOOK_API_VERSION >= 109, ...);  // in src/privatehook.cpp: Res
 #define Sys_Error(msg, ...) g_pMetaHookAPI->SysError("[" MHPluginName "] " msg, __VA_ARGS__);
 
 // src/ThreadManager.h — per-manager hook selection
-hookflag_CreateThread = 1, hookflag_WaitForSingleObject = 2, hookflag_Sleep = 4
+hookflag_CreateThread = 1, hookflag_WaitForSingleObject = 2, hookflag_Sleep = 4, hookflag_Socket = 8
 
 // src/enginedef.h — IEngine::GetState() values; only DLL_CLOSE / DLL_RESTART wait
 DLL_INACTIVE 0, DLL_ACTIVE 1, DLL_PAUSED 2, DLL_CLOSE 3, DLL_TRANS 4, DLL_RESTART 5
@@ -291,7 +293,7 @@ Runtime configuration: `ThreadGuard.dll` must be listed in the host's `metahook/
 - Preserve the MetaHook API, plugin exports and calling conventions. Match the naming, indentation and comment style of the files you touch
 - Resolve engine symbols only through the host gamedata contract. Do not add a signature-scan fallback for `eng`; keep the catalog name `eng` (not `engine`) and the fatal `Could not resolve gamedata symbol: ...` diagnostic
 - Keep the wrapper semantics explicit: `NewCreateThread` must still duplicate the handle before handing it to a manager and must return the original handle, and the `Sleep(1)` / `WaitForSingleObject(0)` short-circuits must stay gated on `StartTermination` and, for `Sleep`, on the non-main-thread check
-- Keep the termination gate (`DLL_CLOSE` / `DLL_RESTART` via `(*eng)->GetState()`) and the per-module hook flags intact; the `svencoop` game-directory gates for `server.dll` and the engine `FreeLibrary` hook are deliberate
+- Keep the termination gate (`DLL_CLOSE` / `DLL_RESTART` via `(*eng)->GetState()`) and per-module hook flags intact; `server.dll` tracking is Sven-only, while the engine `FreeLibrary` hook must protect GameUI on every PE/BLOB family
 - The fixed `MAXIMUM_WAIT_OBJECTS` handle pool and its "already signaled slot" reclamation are part of the design; a full pool must keep failing loudly rather than silently dropping a thread
 - The `#if 0` closed-thread path is intentionally disabled. Do not re-enable it as part of an unrelated change
 - When gamedata usage changes, update `scripts/manifests/threadguard.json` in the same change

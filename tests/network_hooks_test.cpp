@@ -1,12 +1,22 @@
 // Exercise the actual handlers with owned Win32 threads and a loop that either
 // blocks in select or keeps finding packets. The host API provides only a fatal
-// diagnostic stub. IAT installation and symbol resolution require a game run.
+// diagnostic stub. The unload routing test replaces FreeLibrary only to assert
+// that joining precedes unloading. IAT installation and symbol resolution still
+// require a game run.
 #include "../src/ThreadManager.cpp"
 #include <cstdlib>
 #include <cstdarg>
 
+static BOOL WINAPI TestFreeLibrary(HMODULE module);
+#define FreeLibrary TestFreeLibrary
+#include "../src/privatehook.cpp"
+#undef FreeLibrary
+
 metahook_api_t* g_pMetaHookAPI = NULL;
 HANDLE g_MainThreadId = NULL;
+int g_iEngineType = 0;
+DWORD g_dwEngineBuildnum = 0;
+mh_dll_info_t g_EngineDLLInfo = {};
 
 #define CHECK(condition) do { if (!(condition)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #condition); std::abort(); } } while (0)
 
@@ -23,18 +33,21 @@ class TestManager : public IThreadManager
 {
 public:
 	std::vector<HANDLE> handles;
-	void StartTermination() override {}
-	void WaitForAliveThreadsToShutdown() override {}
+	std::atomic<bool> stopping{ false };
+	HMODULE module = NULL;
+	unsigned joined = 0;
+	void StartTermination() override { stopping = true; }
+	void WaitForAliveThreadsToShutdown() override { CHECK(stopping); ++joined; }
 	void OnCreateThread(HANDLE thread) override { handles.push_back(thread); }
-	bool OnWaitForSingleObject(HANDLE, DWORD) override { return false; }
-	bool OnSleep(DWORD) override { return false; }
+	bool OnWaitForSingleObject(HANDLE, DWORD) override { return stopping; }
+	bool OnSleep(DWORD) override { return stopping && (HANDLE)GetCurrentThreadId() != g_MainThreadId; }
 	void InstallHook(int) override {}
 	void UnistallHook() override {}
 	PVOID GetImageBase() const override { return NULL; }
 	ULONG GetImageSize() const override { return 0; }
 	PVOID GetTextBase() const override { return NULL; }
 	ULONG GetTextSize() const override { return MAXDWORD; }
-	HMODULE GetModule() const override { return NULL; }
+	HMODULE GetModule() const override { return module; }
 	BlobHandle_t GetBlobModule() const override { return NULL; }
 	void CloseDuplicates()
 	{
@@ -42,6 +55,71 @@ public:
 		handles.clear();
 	}
 };
+
+class TestEngine : public IEngine
+{
+public:
+	int state = DLL_ACTIVE;
+	bool Load(bool, char*, char*) override { return true; }
+	void Unload() override {}
+	void SetState(int value) override { state = value; }
+	int GetState() override { return state; }
+	void SetSubState(int) override {}
+	int GetSubState() override { return 0; }
+	int Frame() override { return 0; }
+	double GetFrameTime() override { return 0; }
+	double GetCurTime() override { return 0; }
+	void TrapKey_Event(int, bool) override {}
+	void TrapMouse_Event(int, bool) override {}
+	void StartTrapMode() override {}
+	bool IsTrapping() override { return false; }
+	bool CheckDoneTrapping(int&, int&) override { return false; }
+	int GetQuitting() override { return 0; }
+	void SetQuitting(int) override {}
+};
+
+static TestManager* unloadManager;
+static HMODULE expectedModule;
+static unsigned expectedJoins;
+static unsigned unloadCalls;
+static BOOL WINAPI TestFreeLibrary(HMODULE module)
+{
+	CHECK(expectedModule == module);
+	CHECK(expectedJoins == unloadManager->joined);
+	++unloadCalls;
+	return TRUE;
+}
+
+static void CheckUnloadRouting()
+{
+	TestEngine engine;
+	IEngine* enginePointer = &engine;
+	eng = &enginePointer;
+	TestManager manager;
+	manager.module = (HMODULE)0x1234;
+	unloadManager = &manager;
+	g_ThreadManager_GameUI = &manager;
+	for (int state : { DLL_ACTIVE, DLL_CLOSE, DLL_RESTART })
+	{
+		engine.state = state;
+		manager.stopping = false;
+		expectedModule = (HMODULE)0x5678;
+		expectedJoins = manager.joined;
+		CHECK(NewFreeLibrary_Engine(expectedModule));
+		CHECK(!manager.stopping);
+		expectedModule = manager.module;
+		if (state != DLL_ACTIVE) ++expectedJoins;
+		CHECK(NewFreeLibrary_Engine(expectedModule));
+		CHECK((state != DLL_ACTIVE) == manager.stopping);
+	}
+	g_ThreadManager_GameUI = NULL;
+	g_ThreadManager_ServerBrowser = &manager;
+	++expectedJoins;
+	CHECK(NewFreeLibrary_GameUI(manager.module));
+	g_ThreadManager_ServerBrowser = NULL;
+	CHECK(7 == unloadCalls);
+	eng = NULL;
+}
 
 static DWORD engineThreadId;
 static SOCKET socketHandle = INVALID_SOCKET;
@@ -102,6 +180,84 @@ static DWORD WINAPI Worker(void*)
 }
 
 static DWORD WINAPI OtherWorker(void*) { Sleep(INFINITE); return 0; }
+
+struct SocketContext
+{
+	SOCKET socket;
+	sockaddr_in address;
+	HANDLE started;
+	HANDLE stop;
+	CRITICAL_SECTION lock;
+	bool flood;
+};
+
+static DWORD WINAPI SocketWorker(void* argument)
+{
+	auto context = static_cast<SocketContext*>(argument);
+	while (WAIT_OBJECT_0 != NewWaitForSingleObject(context->stop, 0))
+	{
+		fd_set read;
+		FD_ZERO(&read);
+		FD_SET(context->socket, &read);
+		if (!context->flood) SetEvent(context->started);
+		if (NewSocketSelect(0, &read, NULL, NULL, NULL) > 0)
+		{
+			EnterCriticalSection(&context->lock);
+			char packet;
+			while (NewSocketRecvFrom(context->socket, &packet, 1, 0, NULL, NULL) == 1)
+			{
+				// Always leave another datagram queued: draining must observe stop.
+				CHECK(1 == sendto(context->socket, &packet, 1, 0,
+					(sockaddr*)&context->address, sizeof(context->address)));
+				SetEvent(context->started);
+			}
+			CHECK(WSAEWOULDBLOCK == WSAGetLastError());
+			LeaveCriticalSection(&context->lock);
+		}
+	}
+	return 0;
+}
+
+static void CheckSocketShutdown(TestManager& manager)
+{
+	for (bool flood : { false, true })
+	{
+		SocketContext context = {};
+		context.flood = flood;
+		context.socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		CHECK(INVALID_SOCKET != context.socket);
+		context.address.sin_family = AF_INET;
+		context.address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		CHECK(0 == bind(context.socket, (sockaddr*)&context.address, sizeof(context.address)));
+		int size = sizeof(context.address);
+		CHECK(0 == getsockname(context.socket, (sockaddr*)&context.address, &size));
+		u_long nonblocking = 1;
+		CHECK(0 == ioctlsocket(context.socket, FIONBIO, &nonblocking));
+		context.started = CreateEvent(NULL, TRUE, FALSE, NULL);
+		context.stop = CreateEvent(NULL, TRUE, FALSE, NULL);
+		InitializeCriticalSection(&context.lock);
+		if (flood) CHECK(1 == sendto(context.socket, "x", 1, 0, (sockaddr*)&context.address, size));
+		manager.stopping = false;
+		HANDLE worker = CreateThread(NULL, 0, SocketWorker, &context, 0, NULL);
+		CHECK(WAIT_OBJECT_0 == WaitForSingleObject(context.started, 5000));
+		manager.StartTermination();
+		CHECK(WAIT_OBJECT_0 == WaitForSingleObject(worker, 2000));
+		CHECK(TryEnterCriticalSection(&context.lock));
+		LeaveCriticalSection(&context.lock);
+		// The main thread's socket calls still forward even during termination.
+		if (flood)
+		{
+			char packet;
+			CHECK(1 == NewSocketRecvFrom(context.socket, &packet, 1, 0, NULL, NULL));
+		}
+		CloseHandle(worker);
+		CloseHandle(context.started);
+		CloseHandle(context.stop);
+		DeleteCriticalSection(&context.lock);
+		closesocket(context.socket);
+	}
+	manager.stopping = false;
+}
 static DWORD WINAPI FinishedWorker(void*) { return 0; }
 struct SpawnContext { IThreadManager* manager; HANDLE childFinished; };
 static DWORD WINAPI ChildWorker(void* event)
@@ -129,6 +285,7 @@ int main()
 	api.SysError = Fatal;
 	g_pMetaHookAPI = &api;
 	g_MainThreadId = (HANDLE)GetCurrentThreadId();
+	CheckUnloadRouting();
 	TestManager manager;
 	AddThreadManager(&manager);
 	g_NetworkManager = &manager;
@@ -136,6 +293,7 @@ int main()
 	g_pfn_select = select;
 	WSADATA data;
 	CHECK(0 == WSAStartup(MAKEWORD(2, 2), &data));
+	CheckSocketShutdown(manager);
 	entered = CreateEvent(NULL, TRUE, FALSE, NULL);
 	InitializeCriticalSection(&networkLock);
 	// Networking disabled: still forward resource cleanup on each invocation.

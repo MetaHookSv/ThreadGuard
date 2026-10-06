@@ -42,6 +42,7 @@ IThreadManager* g_ThreadManager_ServerDLL = NULL;
 IEngine** eng = NULL;
 
 void ServerDLL_WaitForShutdown(HMODULE hModule);
+void GameUI_WaitForShutdown(HMODULE hModule);
 void ServerBrowser_WaitForShutdown(HMODULE hModule);
 
 int GetEngineDLLState()
@@ -54,6 +55,10 @@ int GetEngineDLLState()
 
 BOOL WINAPI NewFreeLibrary_Engine(HMODULE hModule)
 {
+	if (g_ThreadManager_GameUI && g_ThreadManager_GameUI->GetModule() == hModule)
+	{
+		GameUI_WaitForShutdown(hModule);
+	}
 	if (g_ThreadManager_ServerDLL && g_ThreadManager_ServerDLL->GetModule() == hModule)
 	{
 		ServerDLL_WaitForShutdown(hModule);
@@ -133,18 +138,20 @@ void Engine_InstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
 		g_ThreadManager_Engine = CreateThreadManagerForModule(hModule);
 		g_ThreadManager_Engine->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject | hookflag_Sleep);
 
-		if (0 == stricmp(g_pMetaHookAPI->GetGameDirectory(), "svencoop"))
-		{
-			g_pHook_FreeLibrary_Engine = g_pMetaHookAPI->IATHook(hModule, "kernel32.dll", "FreeLibrary", NewFreeLibrary_Engine, NULL);
-		}
+		g_pHook_FreeLibrary_Engine = g_pMetaHookAPI->IATHook(hModule, "kernel32.dll", "FreeLibrary", NewFreeLibrary_Engine, NULL);
 	}
 	else if (hBlobModule)
 	{
 		g_ThreadManager_Engine = CreateThreadManagerForBlob(hBlobModule);
 		g_ThreadManager_Engine->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject | hookflag_Sleep);
+		g_pHook_FreeLibrary_Engine = g_pMetaHookAPI->BlobIATHook(hBlobModule, "kernel32.dll", "FreeLibrary", NewFreeLibrary_Engine, NULL);
 	}
 	if (g_ThreadManager_Engine)
+	{
+		if (!g_pHook_FreeLibrary_Engine)
+			Sys_Error("Could not install engine FreeLibrary hook!");
 		NetworkThread_InstallHook(g_ThreadManager_Engine);
+	}
 }
 
 void Engine_UninstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
@@ -187,9 +194,22 @@ void GameUI_InstallHook(HMODULE hModule)
 		return;
 
 	g_ThreadManager_GameUI = CreateThreadManagerForModule(hModule);
-	g_ThreadManager_GameUI->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject);
+	g_ThreadManager_GameUI->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject | hookflag_Socket);
 
 	g_pHook_FreeLibrary_GameUI = g_pMetaHookAPI->IATHook(hModule, "kernel32.dll", "FreeLibrary", NewFreeLibrary_GameUI, NULL);
+}
+
+void GameUI_WaitForShutdown(HMODULE hModule)
+{
+	// Join before FreeLibrary enters the loader lock and the socket destructor.
+	if (g_ThreadManager_GameUI && (GetEngineDLLState() == DLL_CLOSE || GetEngineDLLState() == DLL_RESTART))
+	{
+		g_ThreadManager_GameUI->StartTermination();
+		g_ThreadManager_GameUI->WaitForAliveThreadsToShutdown();
+		// GameUI's console may already be shut down; keep teardown diagnostics
+		// independent of engine/VGUI callbacks, even on the main thread.
+		OutputDebugStringA("[ThreadGuard] GameUI: threads stopped before FreeLibrary\n");
+	}
 }
 
 void GameUI_UnistallHook(HMODULE hModule)
@@ -256,7 +276,7 @@ void ServerBrowser_InstallHook(HMODULE hModule)
 		return;
 
 	g_ThreadManager_ServerBrowser = CreateThreadManagerForModule(hModule);
-	g_ThreadManager_ServerBrowser->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject);
+	g_ThreadManager_ServerBrowser->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject | hookflag_Socket);
 }
 
 void ServerBrowser_UninstallHook(HMODULE hModule)

@@ -50,7 +50,7 @@ target_compile_options(threadguard_settings INTERFACE /permissive
 
 include(cmake/Sources.cmake)
 add_library(ThreadGuard SHARED ${THREADGUARD_SOURCES})
-target_link_libraries(ThreadGuard PRIVATE threadguard_settings)
+target_link_libraries(ThreadGuard PRIVATE threadguard_settings ws2_32)
 target_compile_options(ThreadGuard PRIVATE /MP /Zi)
 target_link_options(ThreadGuard PRIVATE /DEBUG /SUBSYSTEM:WINDOWS
     $<$<CONFIG:Debug>:/INCREMENTAL>
