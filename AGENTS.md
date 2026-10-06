@@ -15,6 +15,27 @@ it runs late on normal exit and is skipped on restart (MetaHookSv issue #898).
 - **Framework**: MetaHookSV Plugin API (`IPluginsV4`, API 109 or newer; `LoadEngine` also rejects a launcher whose `MetaHookAPIVersion` is lower than the SDK constant)
 - **Main dependencies**: MetaHook SDK (public API, `include/HLSDK`, `include/Interface`), the engine's `IEngine` interface, and the Win32 threading/module APIs. **No third-party library is linked and no Capstone headers are needed**
 
+Issue #4 adds cooperative network-thread shutdown on all 11 Windows/BLOB engine
+snapshots. The engine's `TerminateThread` import requests exit only for the
+tracked `NET_ThreadFunc` worker whose ID matches `*dwNetThreadId`, then waits for
+the real thread object. The worker exits in its unlocked `Sleep(1)` loop tail.
+Only that worker's `select` waits are capped at 20 ms; after a request,
+`NET_QueuePacket` returns false so continuous receive traffic cannot starve the
+sleep boundary. Steam shutdown ordering from #898 is unchanged.
+
+`NET_Shutdown(void)` is hooked at entry to request and join the tracked worker
+before the original function touches lag queues or sockets. Binary verification
+of all 11 Windows snapshots found socket closure before the original late stop,
+with worker select outside net_cs. The known Host_Shutdown and Sven
+RunListenServer callers do not hold net_cs at this entry. Do not extrapolate
+from reconstructed source or classic Linux: hl-8684/10210 hw.so has no active
+network worker, whereas Sven hw.so does. Original cleanup and repeated calls
+remain intact; general NET_Config(false) transitions do not stop the worker.
+The entry hook waits using a fresh owned duplicate obtained under the state
+mutex, then waits and closes it outside that mutex. A live identity mismatch
+is fatal before cleanup; an already-signaled retained object is safe even if
+the engine has cleared its public thread ID.
+
 ## Project Structure
 
 ```
@@ -26,6 +47,7 @@ ThreadGuard/
 │   ├── privatehook.h          # Engine_FillAddress / Engine_WaitForShutdown / DllLoadNotification
 │   ├── ThreadManager.cpp      # Manager registry, the three API wrappers, CThreadManager
 │   ├── ThreadManager.h        # IThreadManager interface and the hookflag_* values
+│   ├── NetworkThreadState.h   # Atomic identity/request and owned duplicate handle
 │   ├── exportfuncs.cpp        # EngineCommand_InstallHook and the `_restart` fix
 │   ├── exportfuncs.h          # EngineCommand_InstallHook declaration
 │   └── enginedef.h            # IEngine state constants (DLL_INACTIVE … DLL_RESTART)
@@ -36,7 +58,7 @@ ThreadGuard/
 │   └── VCLTL.cmake            # VC-LTL 5.3.1
 ├── scripts/
 │   ├── build-ThreadGuard-x86-{Debug,Release}.bat
-│   ├── manifests/threadguard.json      # eng global + SvEngine GL_Shutdown
+│   ├── manifests/threadguard.json      # eng + network symbols + SvEngine GL_Shutdown
 │   ├── sync-gamedata.py                # Prunes the upstream catalog into the build tree
 │   └── validate-gamedata.py            # Validates it before the plugin target builds
 ├── thirdparty/cache/          # Ignored VC-LTL binary cache
@@ -46,7 +68,9 @@ ThreadGuard/
 └── CMakeLists.txt             # Windows MSVC x86 build and install rules
 ```
 
-There is no `docs/` directory, no assets and no test suite.
+There is no `docs/` directory or checked-in asset tree. `tests/` is a standalone
+Win32 CMake project with thread-state and actual-handler tests. Its host API is
+a fatal-error stub; it does not test real IAT installation or symbol resolution.
 
 ## Core Modules
 
@@ -54,7 +78,7 @@ There is no `docs/` directory, no assets and no test suite.
 
 `IPluginsV4` exported through `EXPOSE_SINGLE_INTERFACE(IPluginsV4, IPluginsV4, METAHOOK_PLUGIN_API_VERSION_V4)`:
 
-- `LoadEngine`: rejects a mismatched host with `Sys_Error("MetaHookAPIVersion too low! expect %d, got %d !")`, collects the file system and engine type/buildnum, copies `cl_enginefunc_t`, records `g_MainThreadId` with `GetCurrentThreadId()`, resolves `eng` and (SvEngine only) `GL_Shutdown`, then registers `DllLoadNotification`. It installs **no** hooks directly
+- `LoadEngine`: rejects a mismatched host with `Sys_Error("MetaHookAPIVersion too low! expect %d, got %d !")`, collects the file system and engine type/buildnum, copies `cl_enginefunc_t`, records `g_MainThreadId` with `GetCurrentThreadId()`, resolves `eng`, `NET_ThreadFunc`, `dwNetThreadId`, `NET_QueuePacket`, `NET_Shutdown` and (SvEngine only) `GL_Shutdown`, then registers `DllLoadNotification`. It installs **no** hooks directly
 - `LoadClient`: copies the export table and calls `EngineCommand_InstallHook()` (the `_restart` fix)
 - `ExitGame`: calls `Engine_WaitForShutdown(GetEngineModule(), GetBlobEngineModule())`
 - `Shutdown`: unregisters the DLL-notification callback
@@ -66,7 +90,7 @@ All hooks are installed and removed from the DLL load/unload notification — no
 
 | Managed module | Hook flags | Extra |
 | --- | --- | --- |
-| engine (`hw.dll`, or the blob engine) | `CreateThread \| WaitForSingleObject \| Sleep` | `FreeLibrary` IAT hook on the **engine's** import table, only when the game directory is `svencoop` |
+| engine (`hw.dll`, or the blob engine) | `CreateThread \| WaitForSingleObject \| Sleep` | network-only `TerminateThread`/`select` IAT hooks and `NET_QueuePacket`/`NET_Shutdown` inline hooks; `FreeLibrary` IAT hook only when the game directory is `svencoop` |
 | `GameUI.dll` | `CreateThread \| WaitForSingleObject` | `FreeLibrary` IAT hook on **GameUI's** import table |
 | `ServerBrowser.dll` | `CreateThread \| WaitForSingleObject` | — |
 | `server.dll` | `CreateThread` only | enabled only when the game directory is `svencoop` |
@@ -94,15 +118,31 @@ The registry is a `std::vector<IThreadManager*>` behind `g_ThreadManagerLock`; `
 
 The three wrappers are installed into `kernel32.dll` import slots:
 
-- `NewCreateThread` calls the real `CreateThread` **first**, then attributes the call with `FindThreadManagerByVirtualAddress(_ReturnAddress())` — the `.text` range decides ownership. The returned handle is duplicated (`DuplicateHandle(..., THREAD_ALL_ACCESS, FALSE, DUPLICATE_SAME_ACCESS)`) and the duplicate is handed to `OnCreateThread`, so the manager owns a handle whose lifetime it controls; the **original** handle is returned to the caller unchanged. An unused `originalCreationFlags` local remains in the function
+- `NewCreateThread` attributes the call with `FindThreadManagerByVirtualAddress(_ReturnAddress())`. Only the engine's exact `NET_ThreadFunc` entry is created suspended long enough to reset/publish its identity and retain its duplicate; the caller's original suspended flag is respected. Other threads retain the original creation flags. The returned handle is also duplicated for `OnCreateThread`, and the **original** is returned unchanged
 - `NewWaitForSingleObject` only intercepts `dwMilliseconds == 0` (the polling shape). While the manager is terminating, `OnWaitForSingleObject` returns true and the wrapper reports `WAIT_OBJECT_0` immediately instead of polling; every other timeout forwards to the real call
-- `NewSleep` only intercepts `dwMilliseconds == 1`. While terminating, `OnSleep` returns true for any thread except `g_MainThreadId`, and the wrapper calls `ExitThread(0)`
+- `NewSleep` only intercepts `dwMilliseconds == 1`. For the current tracked network thread, it calls `ExitThread(0)` only after an independent atomic request. All supported Windows callbacks were verified to use this engine Sleep import only at the unlocked loop tail (also confirmed by the user). Other workers retain the `StartTermination`/non-main-thread gate
 
-Both "while terminating" behaviours are gated on `m_bStartTermination`, a plain `bool` set by `StartTermination` (no atomics; the flag is one-way).
+Both "while terminating" behaviours are gated on the one-way atomic
+`m_bStartTermination`. The engine manager also requests cooperative network exit
+here as a fallback for shutdown paths that skip the original TerminateThread call.
 
 `OnCreateThread` takes `m_ThreadListLock`, tries `AddAliveThread` for a free slot, and on a full pool calls `FindAndRemoveSignaledAliveThread` (a `WaitForSingleObject(handle, 0)` scan) to reclaim a slot whose thread has already exited. If that also fails it calls `g_pMetaHookAPI->SysError("Failed to insert thread to thread manager!")` — a full pool fails loudly rather than dropping a thread.
 
-`WaitForAliveThreadsToShutdown` snapshots the alive handles under `m_ThreadListLock`, then calls `WaitForMultipleObjects(numThreads, hThreads, TRUE, INFINITE)`, clears `m_hAliveThread` (outside the lock) and `CloseHandle`s each snapshot handle. A `#if 0` block that used to move them into `m_hClosedThread` is disabled.
+Reclamation closes the old manager-owned duplicate before replacing its slot.
+`NetworkThreadState` owns a separate duplicate until recreation or engine unload;
+reset rejects a still-running worker. Stop requests verify the target handle's
+ID and the engine DWORD, reject self-wait, and handle already-signaled threads
+without mistaking a reused ID for a live predecessor. No registry/list/state
+lock or RAII guard remains active across the blocking wait or `ExitThread`.
+The worker retires its active atomic ID before ExitThread, so reuse after death
+cannot make a different worker inherit its exit request. The retained duplicate
+still identifies the old object for repeated stop calls until reset.
+
+`WaitForAliveThreadsToShutdown` moves alive handles into a local batch and clears
+their slots under `m_ThreadListLock`, then waits and closes that owned batch
+outside the lock. It repeats to include children registered by a terminating
+parent. A failed wait is fatal. This prevents slot reclamation from closing a
+handle already being waited on. The `#if 0` closed-thread path stays disabled.
 
 ### 4. Termination gates
 
@@ -173,7 +213,12 @@ Keep `cmake/Sources.cmake` as the explicit compile list (4 plugin units); `inclu
 
 ### gamedata
 
-`scripts/manifests/threadguard.json` declares the `engine` / **`eng`** global — the catalog symbol name is `eng`, not `engine` — across 11 engine snapshots (`cof-5936`, `hl-10210`, `hl-3248`, `hl-3266`, `hl-3329`, `hl-3647`, `hl-4554`, `hl-6153`, `hl-8684`, `svencoop-10257`, `svencoop-8948`). A conditional group additionally requires the `GL_Shutdown` function for both Sven snapshots. There are no patch records.
+`scripts/manifests/threadguard.json` declares `eng`, `dwNetThreadId` (globals) and
+`NET_ThreadFunc`, `NET_QueuePacket`, `NET_Shutdown` (functions) across all 11 snapshots
+(`cof-5936`, `hl-10210`, `hl-3248`, `hl-3266`, `hl-3329`, `hl-3647`, `hl-4554`,
+`hl-6153`, `hl-8684`, `svencoop-10257`, `svencoop-8948`). A conditional group
+requires `GL_Shutdown` for both Sven snapshots. `NET_StartThread` is deliberately
+not required: HL25 inlines it. There are no patch records or local scan fallbacks.
 
 `scripts/manifests/threadguard.json` → `scripts/sync-gamedata.py` → pruned catalog under `build/x86/<Configuration>/assets/svencoop/metahook/gamedata/threadguard`, validated by `scripts/validate-gamedata.py` before the plugin target builds. Disable with `-DTHREADGUARD_SYNC_GAMEDATA=OFF`. When gamedata usage changes, update the manifest in the same change.
 
@@ -187,7 +232,9 @@ Select **LaunchGame** and press F5; **DeployGame** builds, stages and copies the
 
 ### CI
 
-`.github/workflows/livebuild.yml` and `release.yml` build and package the plugin. There is no test suite to run.
+`.github/workflows/livebuild.yml` and `release.yml` build and package the plugin.
+Run the separate `tests/` CMake project with Win32 Debug/Release and CTest (see
+README). These tests do not replace live hook routing/shutdown verification.
 
 ## Engine Compatibility
 
@@ -251,7 +298,7 @@ Runtime configuration: `ThreadGuard.dll` must be listed in the host's `metahook/
 - Do not modify external sources or third-party sources; MetaHook is a read-only build input
 - MSVC x86 only. Keep the static CRT / VC-LTL and warning-level settings in `CMakeLists.txt` in sync with the other standalone plugin repositories
 - `README.md` and `README.zh-CN.md` are a pair: keep the managed-module table and build options consistent in both
-- Verification distinguishes build checks from a real game run: there is no test suite here, and the hook routing, the shutdown wait and the `_restart` fix can only be observed in a live game. Claims about in-game behavior must not be made without evidence. Documentation changes need content, path and format checks, not a plugin rebuild
+- Verification distinguishes handler tests from a real game run: actual IAT routing, gamedata resolution and `_restart` integration require a live game. Debugger output reports the network stop request, safe Sleep exit and signaled wait. Claims about in-game behavior must not be made without evidence. Documentation changes need content, path and format checks, not a plugin rebuild
 
 ## Related Links
 

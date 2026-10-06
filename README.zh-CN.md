@@ -17,9 +17,21 @@ GoldSrc 的 Win32 线程代码在创建它的模块被卸载时可能仍在运�
 
 该插件还修复了 Valve 的一个 bug：`_restart` 命令没有正确关闭服务器，导致 `CSteam3Server` 对象出现资源泄漏。被 hook 后的 `_restart` 会先执行 `shutdownserver`以正确释放这些资源。
 
+全部 11 个受支持的 Windows 引擎快照（`hl-*`，包括 BLOB；`svencoop-*`；`cof-*`）使用网络线程协作退出。直接 `TerminateThread` 可能使工作线程遗留 Steam 锁，从而挂起退出。ThreadGuard 通过 `NET_ThreadFunc` 识别每次创建，持有独立的 duplicate 句柄，并核对 `dwNetThreadId` 的运行时值。引擎针对该线程的 `TerminateThread` 调用改为发出退出请求并等待真实线程结束；网络线程在已经解锁的循环末尾 `Sleep(1)` 中调用 `ExitThread(0)`。其他线程的终止调用保留原行为。
+
+仅将该网络线程的 `select` 等待上限设为 20 ms，更短的超时保持原值。收到退出请求后，`NET_QueuePacket` 返回无包，使持续收包的循环也能正常解锁并走到 Sleep。不会提前清零网络状态，不关闭调用方拥有的句柄，也不在等待超时后回退强杀。创建时先发布身份再恢复线程，重建或重新加载引擎时复位退出请求。参见 [issue #4](https://github.com/MetaHookSv/ThreadGuard/issues/4)。
+
 对于 Windows Sven Co-op 8948/10257，ThreadGuard 还会在 `GL_Shutdown` 之前关闭 Steam 客户端，每轮引擎生命周期只调用一次。引擎原来的晚调用通过 `SteamAPI_Shutdown` IAT hook 屏蔽；否则其重启路径会跳过这次关闭，使 Steam 线程遗留到进程退出。处理顺序为 `shutdownserver -> 原始 _restart -> SteamAPI_Shutdown -> GL_Shutdown`，随后允许 launcher 重新加载引擎。参见 [issue #898](https://github.com/hzqst/MetaHookSv/issues/898)。
 
 2026-10-05 实机验证：Windows x86 Sven 10257，MetaHook 正常退出契约为 0。旧版 ThreadGuard 在 `osprey -> _restart -> quit` 后复现 `0xC0000409`，修复后相同对照返回 0。另分别启用和禁用 HalflifeCLI，测试不重启、重启一次、连续重启三次，共六组；每次重启后均确认 `osprey` 和原生 RCON 可用，六组均以 0 退出。Renderer 因已安装版本的独立 gamedata 不匹配问题临时禁用；测试后恢复插件列表和临时 CLI 配置。Release 构建及全部 11 个 gamedata 快照校验通过。8948 仅核实 Windows 调用路径和符号产物，本次未实机验证其他引擎及 Renderer 兼容性。
+
+2026-10-06 网络线程修复验证：Debug / Release 定向测试均通过，包含真实线程的 100 次停止/重建、无限 select、持续收包及句柄回收。Sven 10257 的 50 次输入命令退出和五组对照均返回 0；HL 10210、HL 3266 BLOB 和 CoF 5936 的网络线程退出调试记录均包含请求、安全 Sleep 退出和等待 signaled，进程返回 0。CoF 输入命令场景在 quit 前失去 RCON 响应，已保留 dump，未计为该场景通过。其余快照仅完成符号生成、目录校验及静态调用路径核验，未逐一实机运行。
+
+BLOB 引擎需要包含 ordinal 导入修复的 MetaHook：加载器记录 ordinal 导入，并通过原始导出地址支持 `BlobIATHook` / `BlobHasImportEx` 按名称查询 `select`。插件不依赖硬编码 ordinal 或 `select_import` gamedata。发布本修复前，还需发布上游全部 11 个快照的 `NET_QueuePacket` 符号；本地验证使用已生成并通过校验的目录。
+
+`NET_Shutdown` 入口 hook 会先请求并等待该网络线程结束，再进入原关闭函数。实际核验的 11 个 Windows 二进制均先关闭 socket、后停止线程，而工作线程的 `select` 在网络锁外；提前等待可防止该关闭路径与在途 `select` 并发，也避免清理期间重新填入 lag 队列。队列清理、socket 关闭和锁销毁仍由原函数负责。重复关闭及未启用网络线程时，原资源清理仍正常执行。
+
+补充关闭入口 hook 后，顺序回归测试先复现“原资源回调执行时线程仍存活”，修复后 Debug / Release 均通过。100 次 handler 循环覆盖空闲与持续收包、等待后关闭真实 socket、重复关闭和禁用网络线程。随后实测 Sven 10257 共 8 组（含断线、重启、禁用网络线程），以及 HL 10210、HL 3266 BLOB、CoF 5936 各一次退出，全部返回 0；启用网络线程的场景均记录到等待结束后才进入原资源清理。测试用 DLL、启动器、目录和临时配置均已恢复。
 
 ## 安装
 
@@ -29,7 +41,7 @@ GoldSrc 的 Win32 线程代码在创建它的模块被卸载时可能仍在运�
 
 3. 在 `/SteamLibrary/steamapps/common/Sven Co-op/svencoop/metahook/configs/plugins.lst` 中添加 `ThreadGuard.dll`（单独占一行）。
 
-4. 保留随插件一同分发的 `svencoop/metahook/gamedata/threadguard` 目录：其中存放着 `eng` 全局变量，以及 Sven Co-op 使用的 `GL_Shutdown` 函数。更新 DLL 时同时更新此目录。
+4. 保留随插件一同分发的 `svencoop/metahook/gamedata/threadguard` 目录：其中包含 `eng`、`NET_ThreadFunc`、`dwNetThreadId`、`NET_QueuePacket`、`NET_Shutdown`，以及 Sven Co-op 使用的 `GL_Shutdown`。更新 DLL 时同时更新此目录。HL25 已内联 `NET_StartThread`，因此不要求该符号。
 
 5. 开始游戏。
 
@@ -66,3 +78,13 @@ scripts\build-ThreadGuard-x86-Release.bat -DMETAHOOK_SOURCE_PATH=D:\MetaHook
 该路径为仓库根目录，需提供 `include/metahook.h`、`include/HLSDK` 与 `include/Interface`。
 
 ThreadGuard 从 MetaHook 的 gamedata 目录解析其符号，不链接任何第三方库，也不需要 Capstone 头文件。传入 `-DTHREADGUARD_SYNC_GAMEDATA=OFF` 可在不下载 gamedata 的情况下构建。
+
+## 定向测试
+
+```powershell
+cmake -S tests -B build/tests -A Win32 -DMETAHOOK_SOURCE_PATH=D:/MetaHookSv/MetaHook
+cmake --build build/tests --config Release
+ctest --test-dir build/tests -C Release --output-on-failure
+```
+
+将 `Release` 换成 `Debug` 可测试调试配置。独立测试使用真实 Win32 线程、socket、锁和等待函数，但只提供宿主的致命错误回调，用于验证 handler 行为；真实 IAT 安装及 gamedata 解析仍需游戏实测。handler 测试包含空闲 socket 和持续取包条件下的 100 次停止/重建，以及创建失败、挂起创建、非目标转发和句柄计数检查。实机调试输出记录退出请求、安全 Sleep 退出及真实等待 signaled 三个阶段。

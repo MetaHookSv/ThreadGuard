@@ -86,6 +86,17 @@ void Engine_FillAddress(void)
 	// gamedata provides the address of the engine module's global IEngine* slot,
 	// so GetEngineDLLState keeps dereferencing it exactly once.
 	eng = (decltype(eng))GamedataResolvePtr(g_EngineDLLInfo.ImageBase, "engine", "eng", MH_GAMESYMBOL_KIND_GLOBAL);
+	// Match the actual CreateThread entry, including engines where NET_StartThread
+	// is inlined (HL25) or shared as a tail block (old HL/BLOB).
+	auto networkEntry = (LPTHREAD_START_ROUTINE)GamedataResolvePtr(
+		g_EngineDLLInfo.ImageBase, "engine", "NET_ThreadFunc", MH_GAMESYMBOL_KIND_FUNCTION);
+	auto networkId = (DWORD*)GamedataResolvePtr(
+		g_EngineDLLInfo.ImageBase, "engine", "dwNetThreadId", MH_GAMESYMBOL_KIND_GLOBAL);
+	auto queuePacket = GamedataResolvePtr(
+		g_EngineDLLInfo.ImageBase, "engine", "NET_QueuePacket", MH_GAMESYMBOL_KIND_FUNCTION);
+	auto shutdown = GamedataResolvePtr(
+		g_EngineDLLInfo.ImageBase, "engine", "NET_Shutdown", MH_GAMESYMBOL_KIND_FUNCTION);
+	NetworkThread_Configure(networkEntry, networkId, queuePacket, shutdown);
 	if (g_iEngineType == ENGINE_SVENGINE)
 	{
 		g_pfn_GL_Shutdown = (decltype(g_pfn_GL_Shutdown))GamedataResolvePtr(
@@ -132,10 +143,14 @@ void Engine_InstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
 		g_ThreadManager_Engine = CreateThreadManagerForBlob(hBlobModule);
 		g_ThreadManager_Engine->InstallHook(hookflag_CreateThread | hookflag_WaitForSingleObject | hookflag_Sleep);
 	}
+	if (g_ThreadManager_Engine)
+		NetworkThread_InstallHook(g_ThreadManager_Engine);
 }
 
 void Engine_UninstallHook(HMODULE hModule, BlobHandle_t hBlobModule)
 {
+	NetworkThread_UninstallHook();
+	eng = NULL;
 	if (g_pHook_GL_Shutdown)
 	{
 		g_pMetaHookAPI->UnHook(g_pHook_GL_Shutdown);
