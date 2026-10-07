@@ -29,7 +29,7 @@ ExitGame 修复的 Debug / Release 构建和两组 CTest 均通过，新增真�
 
 仅将该网络线程的 `select` 等待上限设为 20 ms，更短的超时保持原值。收到退出请求后，`NET_QueuePacket` 返回无包，使持续收包的循环也能正常解锁并走到 Sleep。不会提前清零网络状态，不关闭调用方拥有的句柄，也不在等待超时后回退强杀。创建时先发布身份再恢复线程，重建或重新加载引擎时复位退出请求。参见 [issue #4](https://github.com/MetaHookSv/ThreadGuard/issues/4)。
 
-对于 Windows Sven Co-op 8948/10257，ThreadGuard 还会在 `GL_Shutdown` 之前关闭 Steam 客户端，每轮引擎生命周期只调用一次。引擎原来的晚调用通过 `SteamAPI_Shutdown` IAT hook 屏蔽；否则其重启路径会跳过这次关闭，使 Steam 线程遗留到进程退出。处理顺序为 `shutdownserver -> 原始 _restart -> SteamAPI_Shutdown -> GL_Shutdown`，随后允许 launcher 重新加载引擎。参见 [issue #898](https://github.com/hzqst/MetaHookSv/issues/898)。
+对于 Windows Sven Co-op 8948/10257，ThreadGuard 还会在 `GL_Shutdown` 之前关闭 Steam 客户端，每轮引擎生命周期只调用一次。引擎原来的晚调用通过 `SteamAPI_Shutdown` IAT hook 屏蔽；否则其重启路径会跳过这次关闭，使 Steam 线程遗留到进程退出。处理顺序为 `shutdownserver -> 原始 _restart -> SteamAPI_Shutdown -> GL_Shutdown`，随后允许 launcher 重新加载引擎。参见 [issue #898](https://github.com/MetaHookSv/MetaHookSv/issues/898)。
 
 2026-10-05 实机验证：Windows x86 Sven 10257，MetaHook 正常退出契约为 0。旧版 ThreadGuard 在 `osprey -> _restart -> quit` 后复现 `0xC0000409`，修复后相同对照返回 0。另分别启用和禁用 HalflifeCLI，测试不重启、重启一次、连续重启三次，共六组；每次重启后均确认 `osprey` 和原生 RCON 可用，六组均以 0 退出。Renderer 因已安装版本的独立 gamedata 不匹配问题临时禁用；测试后恢复插件列表和临时 CLI 配置。Release 构建及全部 11 个 gamedata 快照校验通过。8948 仅核实 Windows 调用路径和符号产物，本次未实机验证其他引擎及 Renderer 兼容性。
 
@@ -43,7 +43,7 @@ BLOB 引擎需要包含 ordinal 导入修复的 MetaHook：加载器记录 ordin
 
 ## 安装
 
-1. 下载并安装 [MetaHookSv](https://github.com/hzqst/MetaHookSv)。
+1. 下载并安装 [MetaHookSv](https://github.com/MetaHookSv/MetaHookSv)。
 
 2. 构建或下载 .dll，放入 `/SteamLibrary/steamapps/common/Sven Co-op/svencoop/metahook/plugins` 目录。
 

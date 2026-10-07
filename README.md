@@ -82,7 +82,7 @@ On Windows Sven Co-op 8948/10257, ThreadGuard also closes the Steam client befor
 `SteamAPI_Shutdown` import call is suppressed; its restart path otherwise skips
 that call and can leave Steam threads alive until process teardown. This keeps
 the order `shutdownserver -> original _restart -> SteamAPI_Shutdown -> GL_Shutdown`
-without exiting the launcher. See [issue #898](https://github.com/hzqst/MetaHookSv/issues/898).
+without exiting the launcher. See [issue #898](https://github.com/MetaHookSv/MetaHookSv/issues/898).
 
 Verified on 2026-10-05 with Windows x86 Sven 10257 and MetaHook's normal exit
 code 0 contract: the old ThreadGuard reproduced `0xC0000409` after
@@ -97,7 +97,7 @@ other engines and Renderer compatibility were not runtime-tested in this change.
 
 # Install
 
-1. Download and install [MetaHookSv](https://github.com/hzqst/MetaHookSv).
+1. Download and install [MetaHookSv](https://github.com/MetaHookSv/MetaHookSv).
 
 2. Build or download .dll, put it into `/SteamLibrary/steamapps/common/Sven Co-op/svencoop/metahook/plugins` directory.
 
