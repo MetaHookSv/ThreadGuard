@@ -6,3 +6,6 @@
 /thirdparty/cache/
 *.user
 __pycache__/
+
+# Generated from the shared FormatValidation source during CMake configuration.
+/.clang-format
