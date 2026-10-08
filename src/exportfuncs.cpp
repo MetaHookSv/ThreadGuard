@@ -11,9 +11,9 @@
 #include <string>
 #include <sstream>
 
-cl_enginefunc_t gEngfuncs;
-engine_studio_api_t IEngineStudio;
-r_studio_interface_t **gpStudioInterface;
+cl_enginefunc_t        gEngfuncs;
+engine_studio_api_t    IEngineStudio;
+r_studio_interface_t** gpStudioInterface;
 
 static xcommand_t g_pfn_Host_KillServer_f;
 static xcommand_t g_pfn_Host_Quit_Restart_f;
@@ -24,21 +24,21 @@ static xcommand_t g_pfn_Host_Quit_Restart_f;
 
 void Host_Quit_Restart_f(void)
 {
-	g_pfn_Host_KillServer_f();
+    g_pfn_Host_KillServer_f();
 
-	return g_pfn_Host_Quit_Restart_f();
+    return g_pfn_Host_Quit_Restart_f();
 }
 
 void EngineCommand_InstallHook(void)
 {
-	auto entry = g_pMetaHookAPI->FindCmd("shutdownserver");
-	if (entry)
-	{
-		g_pfn_Host_KillServer_f = entry->function;
-		g_pfn_Host_Quit_Restart_f = g_pMetaHookAPI->HookCmd("_restart", Host_Quit_Restart_f);
-	}
-	else
-	{
-		Sys_Error("Command \"shutdownserver\" not found!");
-	}
+    auto entry = g_pMetaHookAPI->FindCmd("shutdownserver");
+    if (entry)
+    {
+        g_pfn_Host_KillServer_f   = entry->function;
+        g_pfn_Host_Quit_Restart_f = g_pMetaHookAPI->HookCmd("_restart", Host_Quit_Restart_f);
+    }
+    else
+    {
+        Sys_Error("Command \"shutdownserver\" not found!");
+    }
 }
