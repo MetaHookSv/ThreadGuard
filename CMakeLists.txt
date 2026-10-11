@@ -55,7 +55,9 @@ target_compile_options(threadguard_settings INTERFACE /permissive
     /wd4311 /wd4312 /wd4819 /wd4996)
 
 include(cmake/Sources.cmake)
+include(cmake/SourceGroups.cmake)
 add_library(ThreadGuard SHARED ${THREADGUARD_SOURCES})
+threadguard_assign_source_groups(ThreadGuard)
 target_link_libraries(ThreadGuard PRIVATE threadguard_settings ws2_32)
 target_compile_options(ThreadGuard PRIVATE /MP /Zi)
 target_link_options(ThreadGuard PRIVATE /DEBUG /SUBSYSTEM:WINDOWS
