@@ -303,6 +303,14 @@ Runtime configuration: `ThreadGuard.dll` must be listed in the host's `metahook/
 - `README.md` and `README.zh-CN.md` are a pair: keep the managed-module table and build options consistent in both
 - Verification distinguishes handler tests from a real game run: actual IAT routing, gamedata resolution and `_restart` integration require a live game. Debugger output reports the network stop request, safe Sleep exit and signaled wait. Claims about in-game behavior must not be made without evidence. Documentation changes need content, path and format checks, not a plugin rebuild
 
+## C/C++ formatting
+
+Owned C/C++ sources use the shared DiligentCore style from
+[MetaHookSv/FormatValidation](https://github.com/MetaHookSv/FormatValidation), pinned
+to clang-format 23.1.3. Setup, commands and the checked scope are recorded in
+`memory/CppFormatting.md` (`CppFormatting`). Do not hand-edit the generated
+`.clang-format`; change the shared style. Keep MSVC inline assembly in explicit blocks.
+
 ## Related Links
 
 - **MetaHookSV**: https://github.com/MetaHookSv/MetaHookSv
