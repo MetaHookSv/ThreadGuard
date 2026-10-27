@@ -54,14 +54,12 @@ ThreadGuard/
 ├── cmake/
 │   ├── Sources.cmake          # Explicit compile list (4 plugin units + the SDK's interface.cpp)
 │   ├── Dependencies.cmake     # Source-path resolution and FetchContent fallback
-│   ├── LaunchGame.cmake       # Optional F5 deploy support
-│   └── VCLTL.cmake            # VC-LTL 5.3.1
+│   └── LaunchGame.cmake       # Optional F5 deploy support
 ├── scripts/
 │   ├── build-ThreadGuard-x86-{Debug,Release}.bat
 │   ├── manifests/threadguard.json      # eng + network symbols + SvEngine GL_Shutdown
 │   ├── sync-gamedata.py                # Prunes the upstream catalog into the build tree
 │   └── validate-gamedata.py            # Validates it before the plugin target builds
-├── thirdparty/cache/          # Ignored VC-LTL binary cache
 ├── build/x86/<configuration>/    # Ignored build output
 ├── install/x86/<configuration>/  # Ignored install output
 ├── README.md, README.zh-CN.md # Bilingual install / managed-module / build documentation
@@ -196,7 +194,7 @@ LoadClient → EngineCommand_InstallHook → HookCmd("_restart", ...)
 
 ## Build Instructions
 
-Requirements: Windows, Visual Studio 2022, CMake 3.21 or newer, Git, Python 3.8 or newer, MSVC x86 (`-A Win32`), static CRT (`MultiThreaded`), `_MBCS`, `NO_MALLOC_OVERRIDE` and VC-LTL 5.3.1. Neither `CMAKE_CXX_STANDARD` nor a `cxx_std_*` compile feature is set, so the MSVC default language level applies.
+Requirements: Windows, Visual Studio 2022, CMake 3.21 or newer, Git, Python 3.8 or newer, MSVC x86 (`-A Win32`), static CRT (`MultiThreaded`), `_MBCS` and `NO_MALLOC_OVERRIDE`. Neither `CMAKE_CXX_STANDARD` nor a `cxx_std_*` compile feature is set, so the MSVC default language level applies.
 
 ```bat
 scripts\build-ThreadGuard-x86-Release.bat
@@ -209,7 +207,6 @@ The scripts configure, build and install. Debug compiles at `/W0`, Release at `/
 
 - **MetaHook SDK**: fetched automatically from the latest `main`; pass `-DMETAHOOK_SOURCE_PATH=D:\MetaHook` or export the same environment variable to build against a local tree. The path is the repository root providing `include/metahook.h`, `include/HLSDK` and `include/Interface`
 - **API surface used**: `ResolveGameSymbol` / `GetGameSymbolStatusString` (through `GamedataResolvePtr`), `RegisterLoadDllNotificationCallback` / `UnregisterLoadDllNotificationCallback`, `IATHook` / `BlobIATHook` / `UnHook`, `HookCmd` / `FindCmd`, `GetModuleBase` / `GetBlobModuleImageBase` / `GetSectionByName` / `GetEngineModule` / `GetBlobEngineModule`, `GetGameDirectory`, `ModuleHasImport` / `ModuleHasImportEx`, `SysError`; from the engine interface, `IEngine::GetState()`
-- **VC-LTL 5.3.1**: downloaded once into `thirdparty/cache`
 - **Nothing else**: no third-party library is linked and no Capstone headers are needed
 
 Keep `cmake/Sources.cmake` as the explicit compile list (4 plugin units); `include/HLSDK/common/interface.cpp` is compiled in because `EXPOSE_SINGLE_INTERFACE` (which exports `CreateInterface`) lives there.
@@ -299,7 +296,7 @@ Runtime configuration: `ThreadGuard.dll` must be listed in the host's `metahook/
 - The `#if 0` closed-thread path is intentionally disabled. Do not re-enable it as part of an unrelated change
 - When gamedata usage changes, update `scripts/manifests/threadguard.json` in the same change
 - Do not modify external sources or third-party sources; MetaHook is a read-only build input
-- MSVC x86 only. Keep the static CRT / VC-LTL and warning-level settings in `CMakeLists.txt` in sync with the other standalone plugin repositories
+- MSVC x86 only. Keep the static CRT and warning-level settings in `CMakeLists.txt` in sync with the other standalone plugin repositories
 - `README.md` and `README.zh-CN.md` are a pair: keep the managed-module table and build options consistent in both
 - Verification distinguishes handler tests from a real game run: actual IAT routing, gamedata resolution and `_restart` integration require a live game. Debugger output reports the network stop request, safe Sleep exit and signaled wait. Claims about in-game behavior must not be made without evidence. Documentation changes need content, path and format checks, not a plugin rebuild
 

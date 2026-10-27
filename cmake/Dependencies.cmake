@@ -1,5 +1,3 @@
-set(THREADGUARD_DEPENDENCY_CACHE_DIR "${PROJECT_SOURCE_DIR}/thirdparty/cache" CACHE PATH "Downloaded dependency cache")
-set(VC_LTL_Root "${THREADGUARD_DEPENDENCY_CACHE_DIR}/VC-LTL-5.3.1" CACHE PATH "VC-LTL binary package root")
 set(METAHOOK_SOURCE_PATH "$ENV{METAHOOK_SOURCE_PATH}" CACHE PATH "MetaHook source tree; empty fetches the pinned SDK")
 
 # The plugin compiles part of the SDK and includes its public headers, so an
@@ -34,6 +32,4 @@ function(threadguard_prepare_dependencies)
     set(METAHOOK_SOURCE_PATH "${metahook_source}" PARENT_SCOPE)
     message(STATUS "METAHOOK_SOURCE_PATH: ${metahook_source}")
 
-    include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/VCLTL.cmake")
-    threadguard_prepare_vcltl()
 endfunction()

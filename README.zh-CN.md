@@ -69,7 +69,7 @@ cmake -S . -B build/launch -G "Visual Studio 17 2022" -A Win32 -DMETAHOOKSV_ENAB
 
 ## 构建
 
-构建需求：Windows、Visual Studio 2022、CMake 3.21 或更高版本、Python 3.8 或更高版本。首次 configure 会下载 VC-LTL 5.3.1 到 `thirdparty/cache`，并同步 gamedata 目录。
+构建需求：Windows、Visual Studio 2022、CMake 3.21 或更高版本、Python 3.8 或更高版本。首次 configure 会同步 gamedata 目录。
 
 1. 运行 `scripts\build-ThreadGuard-x86-Release.bat`（或 `scripts\build-ThreadGuard-x86-Debug.bat`）。
 

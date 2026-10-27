@@ -21,7 +21,6 @@ endif()
 
 include(cmake/Dependencies.cmake)
 threadguard_prepare_dependencies()
-include("${VC_LTL_Root}/VC-LTL helper for cmake.cmake")
 
 # Include directories and definitions follow ThreadGuard.vcxproj. The plugin
 # links no third-party library and, since it no longer decodes instructions,
